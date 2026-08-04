@@ -69,7 +69,7 @@ The currently published `lavish-axi poll` destructively clears feedback before r
 A result lost after that clearing and before the runner reads the process output is unrecoverable, and no firstmate wrapper can close that source-side window.
 Say this plainly wherever the behavior is described.
 
-## Talking to the captain about it
+## Talking to John about it
 
 A wake is not news by itself.
 Report what the source actually produced and what it changes, never the event line, the result path, or the runner.

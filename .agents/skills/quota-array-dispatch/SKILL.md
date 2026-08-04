@@ -86,7 +86,7 @@ Never use headroom, runway, pace, or reserve to silently replace that reasoning 
 
 1. Concrete contradictory evidence or malformed configuration: stop and report the tuple and that evidence.
    Unmeasurable quota, a missing model-level window, an absent runway field, and a credential surface quota-axi does not model are uncertainty, never this rule.
-2. Honor any explicit captain instruction that sets a floor for that candidate before the generic comparison.
+2. Honor any explicit John instruction that sets a floor for that candidate before the generic comparison.
    Do not invent a generic percentage floor or treat a low percentage as an automatic failure.
 3. Keep the strongest-reasoning class when every candidate is tight or completion evidence is poor.
    Dispatch inside that class when a candidate can proceed, or report that its strongest-class choice cannot proceed rather than downgrading it to conserve quota.
@@ -98,7 +98,7 @@ Never use headroom, runway, pace, or reserve to silently replace that reasoning 
    Preserve projection confidence and basis, the limiting window, and the horizon estimate in the rationale rather than hiding them in a score or model-specific heuristic.
 6. Resolve remaining uncertainty explicitly.
    An authenticated candidate with unknown or unmeasurable headroom or runway stays eligible and cannot be silently excluded or assumed sustainable.
-   Prefer known viable evidence when otherwise comparable, and report uncertainty or ask the captain when it still prevents a justified choice.
+   Prefer known viable evidence when otherwise comparable, and report uncertainty or ask John when it still prevents a justified choice.
 7. Use pace and signed reserve only as later diagnostic tie-break evidence among candidates still unresolved after headroom, runway, likely-completion viability, and uncertainty.
    Pace and reserve never rescue a clearly inferior completion prospect.
    Do not collapse these facts into an opaque composite score.
