@@ -39,7 +39,7 @@ lock_is_in_ancestry() {
 lock_is_in_ancestry && exit 0
 nudge=
 fm_operational_input_encode session-start \
-  "Run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions." \
+  "After the caveman skill invocation (if this session has one pending), run \`bin/fm-session-start.sh\` now, exactly once, before executing any other instructions." \
   nudge || exit 0
 printf '%s\n' "$nudge"
 exit 0

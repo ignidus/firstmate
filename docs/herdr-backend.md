@@ -65,6 +65,25 @@ Existing task operations use recorded endpoint ids and do not move a live task w
 The per-home workspace is reused while it has task tabs.
 Closing its last tab can remove the workspace, and the next spawn recreates it.
 
+## Visibility from outside Herdr
+
+A tool running outside Herdr (a terminal multiplexer's own pane inspection, a status-bar
+script, an outer WezTerm pane query) sees only the one outer pane running the `herdr`
+process, never the individual agent panes Herdr multiplexes inside it - `pane:get_current_working_dir()`-style
+APIs resolve to that outer pane's cwd, not whichever agent pane a human is actually
+looking at. `herdr api snapshot`'s `panes[]` array, with its one `focused: true` entry, is
+the escape hatch: query it instead of the outer multiplexer. Already fixed at point of
+use in `~/.config/wezterm/wezterm.lua` (status-bar cwd) and
+`~/.hammerspoon/scripts/read-last-response.py` (TTS pane targeting) - both dated
+2026-08-04 - and reused by `~/.claude/hooks/auto-read-response.sh` for the same root
+cause; this section exists so the next integration finds the fix here instead of by luck.
+
+Related, same root cause of "outer view misses inner state": recovery and list-live scan
+only the first Herdr workspace matching a home label rather than the workspace an
+individual worker actually occupies (see "Watching and task containers" above); treat a
+workspace-label collision the same way, as an outer-view blind spot rather than a
+resolvable ambiguity.
+
 ## Optional presentation spaces
 
 Create local gitignored `config/herdr-presentation-spaces` to request a disposable one-task workspace for each new crewmate or scout.
