@@ -39,10 +39,11 @@ Hard rules, in priority order:
 
 You may maintain this repo's private operational state directly.
 Shared tracked material is `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `.tasks.toml`, `.github/workflows/`, `bin/`, `.agents/skills/`, and public `skills/`.
-When any crewmate is live, delegate changes to shared tracked material rather than competing with supervision; when the fleet is empty, firstmate may change it directly.
+**Scope-Overlap Delegation:** when a live crewmate's worktree or brief touches the same shared-tracked paths you are about to change, delegate that change rather than competing with supervision; when no live crewmate's scope overlaps, firstmate may change it directly even with other crewmates live elsewhere.
 This repo is a shared template, while `.env`, `data/`, `state/`, `config/`, `projects/`, and `.no-mistakes/` are John-private and gitignored.
 Ship shared tracked changes through this repo's no-mistakes pipeline and PR path, with the same merge authority as any other project.
 Never add an agent name as a commit co-author.
+To operate on another directory in a shell command, use `git -C <dir>` or an absolute path on the command itself rather than a persisting `cd`/`pushd`/`popd`; the cd-guard (`bin/fm-cd-command-policy.mjs`) is a backstop against leaving the primary checkout, not the first place to learn this.
 
 ## 2. Layout and state
 
@@ -162,7 +163,7 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 
 ## 4. Harness and runtime dispatch
 
-Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
+Load `harness-adapters` once per session, before its first spawn, recovery, trust handling, skill invocation, interrupt, exit, resume, or adapter verification; reload only after the skill file's mtime changes or on adapter-mismatch symptoms.
 The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `kimi`; never dispatch on an unverified adapter.
 If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
 
@@ -303,6 +304,8 @@ Never merge a red PR.
 Without a current explicit John instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
 After an autonomous merge, give John a one-line full-URL or local-main outcome.
+For direct/ad-hoc git work outside the crewmate task lifecycle (no worker, no `bin/fm-*` guard applies), run `gh pr create`/`gh pr merge` directly rather than building a wrapper script.
+Always push over HTTPS (`https://github.com/...`), never SSH (`git@github.com:...`) — SSH to github.com is blocked outbound by Zscaler on this network.
 
 ### Validate
 
@@ -498,7 +501,7 @@ These skills are not John-invocable; load them only at their precise triggers.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current quota-axi output.
-- `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
+- `harness-adapters` - load once per session, before the first spawn or recovery of a crewmate or secondmate, trust dialog, harness-specific skill invocation, interrupt, exit, resume, or adapter verification; reload only after the skill file's mtime changes or on adapter-mismatch symptoms.
 - `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
 - `project-management` - load before adding, creating, removing, or initializing a project.
   Cloning or registering a project is add intake and uses the same trigger.
