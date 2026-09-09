@@ -333,6 +333,14 @@ The report is the only thing that survives, so anything worth keeping must be in
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Never run a state-mutating infrastructure command yourself against shared or production state,
+   including a Terraform \`apply\` in any form (an ordinary apply, \`-refresh-only\`, \`-target\`, or
+   any other flag combination), an \`import\`, or an equivalent mutating command in another IaC tool.
+   This holds even when you believe the change is safe, read-only in effect, or reversible: that
+   judgment is not yours to make. The only state-changing path is the project's own CI/pipeline
+   after a merged PR, or an explicit human-run step the project's own docs name as human-run. If you
+   believe one is genuinely needed mid-task, append \`needs-decision: {why an apply seems needed}\`
+   and stop; do not run it yourself under any circumstance.
 
 # Definition of done
 Write your findings to \`$DATA/$ID/report.md\`.
@@ -448,6 +456,14 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
+8. Never run a state-mutating infrastructure command yourself against shared or production state,
+   including a Terraform \`apply\` in any form (an ordinary apply, \`-refresh-only\`, \`-target\`, or
+   any other flag combination), an \`import\`, or an equivalent mutating command in another IaC tool.
+   This holds even when you believe the change is safe, read-only in effect, or reversible: that
+   judgment is not yours to make. The only state-changing path is the project's own CI/pipeline
+   after a merged PR, or an explicit human-run step the project's own docs name as human-run. If you
+   believe one is genuinely needed mid-task, append \`needs-decision: {why an apply seems needed}\`
+   and stop; do not run it yourself under any circumstance.
 
 # Project memory
 If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
