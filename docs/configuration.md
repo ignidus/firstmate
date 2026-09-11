@@ -137,9 +137,17 @@ Fleet-local operational facts and gotchas live locally in `data/learnings.md`; i
 The file is created lazily on first learning and follows the same dated, evidence-backed, curated style as `data/captain.md`: inspect the current file first, then rewrite or prune stale entries instead of appending forever.
 There is no shared learnings file by captain decision.
 
+An optional `data/learnings-archive.md` holds the full learnings set behind that loaded file.
+The archive is gitignored, is never printed in the session-start context digest, and is never counted against the startup-memory budget, because both surfaces name only `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`.
+That exclusion is the point: it lets a home keep a learning permanently without paying for it on every session of every fleet member.
+The exclusion also makes the archive unreachable on its own, so a home that uses one keeps `data/learnings.md` as an index that states the archive exists, lists what topics it covers, and gives the search command.
+Removing that pointer is equivalent to deleting the archive.
+The [`stow`](../.agents/skills/stow/SKILL.md) skill owns the procedure for deciding what stays loaded, what moves to the archive, and how the index is maintained.
+
 ## Startup memory budget (config/startup-memory-budget)
 
 `config/startup-memory-budget` is the primary-authoritative per-home allowance for the startup prompt-memory surface: `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md` together.
+`data/learnings-archive.md` is deliberately outside this surface; see "Operational learnings" above.
 The locked mutable bootstrap path materializes its visible default of `7500` estimated tokens in a primary home when the file is absent.
 To select another allowance, replace the primary home's file with one valid positive value in the exact format below; the next locked bootstrap convergence or `bin/fm-config-push.sh` propagates it to registered secondmates.
 A secondmate does not create an independent default and instead receives the primary value through the inherited-local-material contract in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md).
