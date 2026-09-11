@@ -595,6 +595,47 @@ EOF
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
 }
 
+# --- context digest: the learnings archive stays out of context --------------
+
+# docs/configuration.md and .agents/skills/stow/SKILL.md promise that
+# data/learnings-archive.md is never printed here and that data/learnings.md
+# stays the only pointer to it. This pins both halves: the archive body never
+# reaches session context, and the index that references it prints verbatim.
+test_context_digest_excludes_learnings_archive() {
+  local rec root home fakebin out memory_section
+  rec=$(new_world context-digest-archive)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  cat > "$home/data/learnings.md" <<'MD'
+Archived learnings live in data/learnings-archive.md, outside the digest and outside the budget.
+Topics archived: herdr pane liveness, treehouse lease timeouts.
+Search it on demand: grep -n -i "<topic>" data/learnings-archive.md
+MD
+  cat > "$home/data/learnings-archive.md" <<'MD'
+ARCHIVED-ONLY-BODY-MARKER: herdr pane get never auto-starts a server (2026-08-14).
+MD
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  case "$out" in
+    *ARCHIVED-ONLY-BODY-MARKER*) fail "session digest printed data/learnings-archive.md content: $out" ;;
+  esac
+  printf '%s\n' "$out" | grep -q '^data/learnings-archive\.md$' \
+    && fail "session digest opened a section for data/learnings-archive.md"
+
+  memory_section=$(printf '%s\n' "$out" | awk '/^data\/learnings\.md$/{flag=1;next}/^data\//{flag=0}flag')
+  assert_contains "$memory_section" 'Archived learnings live in data/learnings-archive.md' \
+    "digest did not print the loaded index pointer to the archive"
+  assert_contains "$memory_section" 'grep -n -i "<topic>" data/learnings-archive.md' \
+    "digest did not print the archive search command the index publishes"
+
+  pass "context digest excludes data/learnings-archive.md and prints only its index pointer"
+}
+
 # --- lock refusal: read-only path --------------------------------------------
 
 test_lock_refusal_read_only_path() {
@@ -1392,6 +1433,7 @@ EOF
 }
 
 test_context_digest_absent_empty_present
+test_context_digest_excludes_learnings_archive
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_session_lock_concurrent_single_winner

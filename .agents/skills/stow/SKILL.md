@@ -24,6 +24,7 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    Report that concrete exception and do not call the session reset-safe.
 2. Read every current memory file completely: `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`.
    Treat an absent local file as absent, not as an invitation to manufacture content.
+   `data/learnings-archive.md` is not part of this pass, because it is outside the budget by design and is searched on demand rather than read.
    In a primary home, all three are curation inputs under their existing ownership rules.
    In a secondmate home, `data/captain-shared.md` is a read-only primary-owned input: count it, never edit it, and curate only the editable local files.
 3. Build one whole-file retention plan before editing.
@@ -63,15 +64,25 @@ Never describe the session as reset-safe while the memory total is over budget o
    - File each undone next step as a queued backlog item with a genuine `blocked-by` dependency when applicable.
 4. **Use inspect-then-update.**
    For every retained fact, ask which current statement it supersedes, whether it can be a one-sentence rewrite, and whether a stale entry should be deleted, retired, or routed to an existing stronger owner.
-   The only graduation moves are promotion to tracked shared material through a PR, folding a learning into John-preference destination selected by AGENTS.md, or deletion of a stale entry.
+   The only graduation moves are promotion to tracked shared material through a PR, folding a learning into the John-preference destination selected by AGENTS.md, archiving a still-true learning to `data/learnings-archive.md`, or deletion of a stale entry.
    Do not invent another graduation path.
+
+5. **Prefer archiving over deletion for a learning that is still true but rarely needed.**
+   `data/learnings-archive.md` is outside the startup digest and outside the budget, so an entry moved there costs nothing per session and is still recoverable; [`docs/configuration.md`](../../../docs/configuration.md) owns that surface definition.
+   Keep loaded only what would harm a session that did not already know it, and move the rest.
+   When the archive is in use, `data/learnings.md` must remain an index that states the archive exists, lists the topics it covers, and gives the search command, because nothing else points a future session there.
+   Never delete that pointer or leave the archive unreferenced, and never read the whole archive during a routine pass; grep it for the topic at hand instead.
+   Before writing an entry to the archive, grep the archive for that entry's topic and reconcile whatever that search returns.
+   Reconciling means rewriting or correcting a superseded entry in place instead of appending a second dated entry on the same topic, and deleting an entry the new evidence refutes.
+   The archive is not append-only and carries the same rewrite-and-prune contract as the loaded index, so one topic never accumulates contradictory dated entries.
 
 ## Completion receipt
 
 Report the outcome in plain captain-facing language with all of these facts:
 
 - effective startup-memory budget and total estimated tokens before and after;
-- one or more actions for each of `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`: `unchanged`, `added`, `rewritten`, `pruned`, or `routed`;
+- one or more actions for each of `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`: `unchanged`, `added`, `rewritten`, `pruned`, `archived`, or `routed`;
+- whether `data/learnings.md` still carries a working pointer to `data/learnings-archive.md` when that archive exists;
 - each durable finding filed outside memory and its authoritative owner;
 - every unresolved exception, including a primary-owned shared-file constraint in a secondmate home;
 - whether the session is safe to reset, only when all durable findings are captured and the post-pass result is within budget with no exception.

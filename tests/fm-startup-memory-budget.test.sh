@@ -196,6 +196,36 @@ test_budget_accounting_reports_all_three_files_and_safe_failure() {
   pass "budget accounting sums the three startup files and reports safe failures"
 }
 
+# data/learnings-archive.md is documented in docs/configuration.md and
+# .agents/skills/stow/SKILL.md as deliberately outside this accounted surface:
+# that exclusion is the whole mechanism the archiving convention rests on, so
+# an archive far larger than the budget must not move the total by one token.
+test_budget_accounting_excludes_the_learnings_archive() {
+  local home before after
+  home="$TMP_ROOT/archive-exclusion-home"
+  mkdir -p "$home/config" "$home/data"
+  printf '10\n' > "$home/config/startup-memory-budget"
+  printf 'abc\n' > "$home/data/captain.md"
+  printf 'abc\n' > "$home/data/learnings.md"
+
+  before=$(FM_HOME="$home" "$BUDGET" report)
+  assert_contains "$before" 'total_estimated_tokens=4' "baseline total was not the sum of the two present files"
+  assert_contains "$before" 'budget_status=within-budget' "baseline total was not classified within budget"
+
+  # An archive an order of magnitude over the budget.
+  head -c 40000 /dev/zero | tr '\0' 'x' > "$home/data/learnings-archive.md"
+
+  after=$(FM_HOME="$home" "$BUDGET" report)
+  [ "$after" = "$before" ] \
+    || fail "data/learnings-archive.md changed the accounted surface: $after"
+  case "$after" in
+    *learnings-archive*) fail "report named data/learnings-archive.md as an accounted file: $after" ;;
+  esac
+  assert_contains "$after" 'budget_status=within-budget' \
+    "an out-of-surface archive pushed the report over budget"
+  pass "budget accounting excludes data/learnings-archive.md from the startup surface"
+}
+
 new_propagation_world() {
   local world=$1 root="$1/root" home="$1/home" sm="$1/sm" head
   mkdir -p "$home/config" "$home/data" "$home/state" "$root/bin"
@@ -312,6 +342,7 @@ test_primary_budget_converges_with_exact_reread_and_safe_failures() {
 test_primary_bootstrap_materializes_visible_default
 test_safe_parser_rejects_ambiguous_and_unsafe_values
 test_budget_accounting_reports_all_three_files_and_safe_failure
+test_budget_accounting_excludes_the_learnings_archive
 test_primary_budget_converges_with_exact_reread_and_safe_failures
 
 echo '# all fm-startup-memory-budget tests passed'
