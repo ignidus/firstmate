@@ -72,6 +72,9 @@ Never describe the session as reset-safe while the memory total is over budget o
    Keep loaded only what would harm a session that did not already know it, and move the rest.
    When the archive is in use, `data/learnings.md` must remain an index that states the archive exists, lists the topics it covers, and gives the search command, because nothing else points a future session there.
    Never delete that pointer or leave the archive unreferenced, and never read the whole archive during a routine pass; grep it for the topic at hand instead.
+   Before writing an entry to the archive, grep the archive for that entry's topic and reconcile whatever that search returns.
+   Reconciling means rewriting or correcting a superseded entry in place instead of appending a second dated entry on the same topic, and deleting an entry the new evidence refutes.
+   The archive is not append-only and carries the same rewrite-and-prune contract as the loaded index, so one topic never accumulates contradictory dated entries.
 
 ## Completion receipt
 
