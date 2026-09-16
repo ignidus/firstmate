@@ -238,6 +238,8 @@ The delivery lifecycle is an always-loaded operational contract; referenced scri
 
 ### Intake and authority
 
+When John asks to progress, advance, or sweep the full open CYB story backlog rather than a single task, load the `cyb-sweep` skill instead of the per-story intake below; it owns the mandatory dry-run approval gate, the dependency-vs-decision classification, and the live Lavish decision list.
+
 Resolve the project independently for every request.
 An explicit project wins, a clear follow-up inherits its referent, and otherwise match the request against the registry, work under way, and project code or README.
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
