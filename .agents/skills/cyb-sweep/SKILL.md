@@ -73,7 +73,7 @@ Progress means an actual next-step action, not a status report.
 
 ## Dependencies and concurrency
 
-Follow `AGENTS.md` section 7's concurrency rule (lines 271-272): dispatch isolated work with no artificial concurrency cap, and serialize only for a true dependency or unsafe shared-surface conflict, never for mere file, product, repository, or team overlap.
+Follow `AGENTS.md` section 7's concurrency rule: dispatch isolated work with no artificial concurrency cap, and serialize only for a true dependency or unsafe shared-surface conflict, never for mere file, product, repository, or team overlap.
 cyb-sweep adds these CYB/Jira-specific rules on top of it:
 
 - Determine dependencies from your own technical reading of each story, its acceptance criteria, affected systems, project artifacts, and expected outputs; Jira's existing Blocked-by, Depends-on, or similar fields are evidence, not the source of truth.
