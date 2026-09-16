@@ -49,12 +49,12 @@ No execution activity may occur before John approves, including:
 
 The sole purpose of the dry run is to expose the complete planned blast radius before any action occurs.
 
-Report to John:
+Report to John using plain-language outcomes, per `AGENTS.md` section 9's translation rule, never the raw classification labels next-action, in-flight-steer, dependency-blocked, or decision-held:
 
 - total open story count;
-- count and list of story keys in each of next-action, in-flight-steer, dependency-blocked, and decision-held;
-- for dependency-blocked stories, the dependency in plain terms;
-- for decision-held stories, a preview count only, full detail comes later in the Decision List.
+- count and list of story keys in each condition, described as: dispatched to its next step (next-action), checked and steered (in-flight-steer), waiting on a dependency (dependency-blocked), and needing your decision (decision-held);
+- for stories waiting on a dependency, the dependency in plain terms;
+- for stories needing a decision, a preview count only, full detail comes later in the Decision List.
 
 Default approval is all-at-once: once John approves the dry-run summary, proceed with every classified story under the rules below.
 If anything about scope or approval is ambiguous when you reach it, ask John directly rather than assuming.
@@ -73,14 +73,11 @@ Progress means an actual next-step action, not a status report.
 
 ## Dependencies and concurrency
 
-Determine dependencies from your own technical reading of each story, its acceptance criteria, affected systems, project artifacts, and expected outputs.
-Jira's existing Blocked-by, Depends-on, or similar fields are evidence, not the source of truth.
-A genuine dependency exists only when a story materially requires another story's output, completion, approval, or ordered change before it can proceed safely.
+Follow `AGENTS.md` section 7's concurrency rule (lines 271-272): dispatch isolated work with no artificial concurrency cap, and serialize only for a true dependency or unsafe shared-surface conflict, never for mere file, product, repository, or team overlap.
+cyb-sweep adds these CYB/Jira-specific rules on top of it:
 
-- Run fully independent stories concurrently with no artificial concurrency cap.
-- Serialize stories only when a genuine dependency or shared-surface conflict requires ordering.
+- Determine dependencies from your own technical reading of each story, its acceptance criteria, affected systems, project artifacts, and expected outputs; Jira's existing Blocked-by, Depends-on, or similar fields are evidence, not the source of truth.
 - Treat same-surface ordering conflicts, including ZIA policy or rule-order interactions, as dependencies when concurrent execution could produce an invalid, conflicting, or incorrectly ordered result.
-- Do not serialize stories merely because they concern the same product, repository, team, or general subject.
 - Before creating a Jira dependency link, verify that the dependency is real and that an equivalent link does not already exist.
 - If a genuine dependency is missing from Jira, create the appropriate issue link immediately.
 - If an existing Jira dependency appears incorrect or stale, do not let it control execution; record the discrepancy without deleting or altering the existing link unless the governing instructions explicitly authorize that change.
