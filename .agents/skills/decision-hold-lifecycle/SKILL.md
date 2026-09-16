@@ -1,8 +1,8 @@
 ---
 name: decision-hold-lifecycle
 description: >-
-  Agent-only policy for completing investigations and visual reviews without losing unresolved John decisions.
-  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a decision, and when recording or routing the John's answer.
+  Agent-only policy for completing an investigation, visual review, or backlog sweep pass without losing unresolved John decisions.
+  Load before treating an investigation, scout report, structured review, Lavish review, or backlog sweep pass as complete, before ending a visual review that exposed a decision, and when recording or routing the John's answer.
 user-invocable: false
 metadata:
   internal: true
@@ -10,15 +10,15 @@ metadata:
 
 # Durable unresolved-decision lifecycle
 
-This skill is the single policy owner for unresolved John decisions discovered by an investigation or visual review.
+This skill is the single policy owner for unresolved John decisions discovered by an investigation, visual review, or backlog sweep pass.
 
 ## Policy
 
-Every unresolved decision that belongs to John and is discovered while producing, reading, presenting, or ending an investigation or visual review must become a structured captain-held work item in the authoritative backlog of the home that owns the originating work before that work or review may be treated as complete.
+Every unresolved decision that belongs to John and is discovered while producing, reading, presenting, or ending an investigation, visual review, or backlog sweep pass must become a structured captain-held work item in the authoritative backlog of the home that owns the originating work before that work or review may be treated as complete.
 The agent performs the semantic inventory because scripts must not infer decisions from report prose, visual-review artifacts, terminal output, or chat.
 Give each distinct unresolved decision a stable privacy-safe key, register it through `bin/fm-decision-hold.sh hold`, and use the same key on retry so registration is idempotent while different decisions retain different durable identities.
 After inventorying the whole report and review surface, run `bin/fm-decision-hold.sh complete` with every unresolved key, or with `--none` only when the reviewed surface contains no unresolved John decision.
-A completed investigation and an ended visual review use this same owner and completion command; a visual tool, including Lavish, never owns a parallel completion policy.
+A completed investigation, an ended visual review, and a completed backlog sweep pass use this same owner and completion command; a visual tool, including Lavish, never owns a parallel completion policy.
 Run the command in the originating work's authoritative `FM_HOME`; main-home work creates main-home holds, and secondmate-owned work creates holds in that secondmate home's backlog rather than copying them into the main backlog.
 Do not close a hold merely because the originating investigation completed, its report was archived, its visual review ended, or its task was torn down.
 The hold remains the authoritative Captain's Call item until the John's answer is durably recorded, dependent work is created in the same backlog and blocked by that hold, and `bin/fm-decision-hold.sh resolve` routes the answer by clearing those dependency edges before closing the hold.

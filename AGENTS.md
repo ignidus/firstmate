@@ -238,6 +238,8 @@ The delivery lifecycle is an always-loaded operational contract; referenced scri
 
 ### Intake and authority
 
+When John asks to progress, advance, or sweep the full open CYB story backlog rather than a single task, load the `cyb-sweep` skill instead of the per-story intake below; it owns the mandatory dry-run approval gate, the dependency-vs-decision classification, and the live Lavish decision list.
+
 Resolve the project independently for every request.
 An explicit project wins, a clear follow-up inherits its referent, and otherwise match the request against the registry, work under way, and project code or README.
 Proceed on one confident match while naming the project in plain language; ask one concise question when multiple or no projects plausibly match.
@@ -509,7 +511,7 @@ These skills are not John-invocable; load them only at their precise triggers.
   Cloning or registering a project is add intake and uses the same trigger.
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
-- `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing John's answer.
+- `decision-hold-lifecycle` - load before treating an investigation, visual review, or backlog sweep pass as complete, before ending a visual review that exposed a decision, and when recording or routing John's answer.
 - `process-event-sources` - load before arming a long-polling source, and on any `procevent <adapter> <source-id> <sequence>` check wake.
   Never run a registered source's blocking command yourself in a conversational turn.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.

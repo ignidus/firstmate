@@ -5,7 +5,7 @@ This document records the deterministic mechanism, structured surfaces, and priv
 
 ## Mechanism
 
-`bin/fm-decision-hold.sh` is the only lifecycle command for an investigation or visual review's unresolved captain decisions.
+`bin/fm-decision-hold.sh` is the only lifecycle command for an investigation, visual review, or backlog sweep pass's unresolved captain decisions.
 The command runs tasks-axi in the active `FM_HOME`, so the existing backlog remains the only durable work database and a secondmate-owned decision stays in the secondmate home.
 It never reads report bodies, review artifacts, terminal output, or chat.
 
