@@ -24,6 +24,10 @@
 #   fm-decision-hold.sh verify <origin-id>
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
 #     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
+#   fm-decision-hold.sh repair <origin-id> <decision-key> \
+#     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
+#   fm-decision-hold.sh repair <origin-id> <decision-key> \
+#     --never-a-decision --note-file <path>
 #
 # `complete` is the shared investigation and visual-review completion gate.
 # `--none` is an explicit semantic attestation that the just-reviewed surface has
@@ -37,6 +41,23 @@
 # It writes the captain decision and routed identities into the hold body, clears
 # those dependency edges, and only then marks the hold Done. A failure before the
 # final step leaves the captain hold open.
+#
+# `repair` is the only supported way to stamp this script's attestation onto a
+# captain identity that was already closed outside this script, which `hold` and
+# `resolve` both refuse to touch. It requires an existing kind `captain` identity
+# that is already Done, takes the durable record and routed work exactly as
+# `resolve` does, and reuses the same attestation body and retry identity so
+# `verify` accepts the record afterwards. The body records which of two mutually
+# exclusive facts is being stamped: a real captain decision closed by hand, or,
+# with --never-a-decision and its own --note-file, a closed key that never carried
+# a captain decision at all. Neither input is ever inferred from the other, and the
+# two shapes cannot be combined. `repair` refuses an absent, non-captain, or
+# still-open identity, so a genuinely open decision still goes through `resolve`.
+# It requires every --routed-to task to exist but not to still be blocked, clears
+# the dependency edge each routed task still records for the closed identity,
+# archives the superseded body, and stamps the attestation last so a failure
+# before that leaves the record unstamped. An identical retry is idempotent; a
+# retry recording a different decision, routed set, or repair kind fails.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -88,6 +109,17 @@ sha256_text() {  # <text>
   else
     fail "shasum or sha256sum is required"
   fi
+}
+
+read_decision_record() {  # <label> <path>
+  local label=$1 path=$2 text
+  [ -n "$path" ] || fail "--$label-file is required"
+  [ -f "$path" ] || fail "$label file does not exist: $path"
+  text=$(cat "$path")
+  [ -n "$text" ] || fail "$label file must not be empty"
+  [ "$(printf '%s' "$text" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
+    || fail "$label file exceeds 8192 bytes"
+  printf '%s' "$text"
 }
 
 hold_id() {  # <origin-id> <decision-key>
@@ -221,6 +253,21 @@ verify_resolution_identity() {
     || fail "captain hold $id records a different captain decision"
   [ "$recorded_routes" = "$routed_csv" ] \
     || fail "captain hold $id records different routed work"
+}
+
+# The repair marks are part of the shared attestation body: they state which of the
+# two mutually exclusive facts a stamped record carries, and a retry that flips
+# between them is a conflict rather than an idempotent repeat.
+REPAIR_DECIDED_MARK='Repair: stamped onto a captain decision closed outside fm-decision-hold.'
+REPAIR_NEVER_MARK='Repair: stamped onto a closed key that was never a captain decision.'
+
+verify_repair_identity() {  # <hold-id> <hold-body> <decision-digest> <routed-csv> <repair-mark>
+  local id=$1 hold_body=$2 decision_digest=$3 routed_csv=$4 mark=$5
+  case "$hold_body" in
+    *"$mark"*) : ;;
+    *) fail "captain decision $id already carries a different resolution record than this repair" ;;
+  esac
+  verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
 }
 
 command_id() {
@@ -381,12 +428,7 @@ command_resolve() {
   done
   validate_slug origin-id "$origin"
   validate_slug decision-key "$key"
-  [ -n "$decision_file" ] || fail "--decision-file is required"
-  [ -f "$decision_file" ] || fail "decision file does not exist: $decision_file"
-  decision=$(cat "$decision_file")
-  [ -n "$decision" ] || fail "decision file must not be empty"
-  [ "$(printf '%s' "$decision" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
-    || fail "decision file exceeds 8192 bytes"
+  decision=$(read_decision_record decision "$decision_file")
   [ -n "$routed" ] || fail "at least one --routed-to task is required"
   routed=$(printf '%s\n' "$routed" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)
   routed_csv=$(printf '%s\n' "$routed" | tr ' ' ',')
@@ -453,12 +495,87 @@ command_resolve() {
   printf 'resolved: %s -> %s\n' "$id" "$routed"
 }
 
+command_repair() {
+  local origin=${1:-} key=${2:-} decision_file='' note_file='' never=0 routed='' routed_csv='' \
+    id='' record='' digest='' mark='' section='' routed_block='' body='' show state kind hold_body dep
+  [ "$#" -ge 2 ] || { usage >&2; exit 2; }
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --decision-file) shift; decision_file=${1:-} ;;
+      --note-file) shift; note_file=${1:-} ;;
+      --never-a-decision) never=1 ;;
+      --routed-to) shift; validate_slug routed-task "${1:-}"; routed="${routed}${routed:+ }${1:-}" ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug origin-id "$origin"
+  validate_slug decision-key "$key"
+  if [ "$never" = 1 ]; then
+    [ -z "$decision_file" ] || fail "--never-a-decision cannot be combined with --decision-file"
+    [ -z "$routed" ] || fail "--never-a-decision cannot be combined with --routed-to"
+    [ -n "$note_file" ] || fail "--never-a-decision requires its own --note-file"
+    record=$(read_decision_record note "$note_file")
+    routed_csv=none
+    mark=$REPAIR_NEVER_MARK
+    section=$(printf 'None. This key was never a captain decision.\n%s' "$record")
+    routed_block='- none'
+  else
+    [ -z "$note_file" ] || fail "--note-file records a key that was never a decision and requires --never-a-decision"
+    record=$(read_decision_record decision "$decision_file")
+    [ -n "$routed" ] || fail "at least one --routed-to task is required"
+    routed=$(printf '%s\n' "$routed" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)
+    routed_csv=$(printf '%s\n' "$routed" | tr ' ' ',')
+    mark=$REPAIR_DECIDED_MARK
+    section=$record
+    routed_block=$(printf '%s\n' "$routed" | tr ' ' '\n' | sed '/^$/d;s/^/- /')
+  fi
+  digest=$(sha256_text "$record")
+  require_tasks_axi
+  id=$(hold_id "$origin" "$key")
+  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  kind=$(show_field "$show" kind)
+  state=$(show_field "$show" state)
+  hold_body=$(show_field "$show" body)
+  [ "$kind" = captain ] || fail "backlog item $id is not kind captain"
+  [ "$state" = "done" ] \
+    || fail "captain decision $id is not closed (state=$state); an open decision is closed by resolve"
+  if verify_hold_resolved "$id"; then
+    verify_repair_identity "$id" "$hold_body" "$digest" "$routed_csv" "$mark"
+    printf 'repaired: %s\n' "$id"
+    return 0
+  fi
+
+  # Prove every routed identity exists before mutating any edge, so a bad routed
+  # set fails before a partial repair.
+  for dep in $routed; do
+    task_show "$dep" >/dev/null || fail "routed task $dep does not exist in the active home"
+  done
+  # A hand-closed identity leaves its recorded dependency edge on routed work even
+  # though tasks-axi already treats a Done blocker as satisfied. Clearing the edge
+  # is idempotent, and doing it before the attestation keeps the stamp the last
+  # write, so an interrupted repair stays unstamped.
+  for dep in $routed; do
+    tasks_axi unblock "$dep" --by "$id" >/dev/null \
+      || fail "could not clear the recorded dependency edge from $dep"
+  done
+
+  body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n%s\n\nCaptain decision:\n%s\n\nRouted work:\n%s\n' \
+    "$digest" "$routed_csv" "$mark" "$section" "$routed_block")
+  tasks_axi update "$id" --body "$body" --archive-body >/dev/null \
+    || fail "could not stamp the resolution record on $id"
+  verify_hold_resolved "$id" || fail "captain decision $id did not retain its stamped resolution record"
+  printf 'repaired: %s%s\n' "$id" "${routed:+ -> $routed}"
+}
+
 case "${1:-}" in
   id) shift; command_id "$@" ;;
   hold) shift; command_hold "$@" ;;
   complete) shift; command_complete "$@" ;;
   verify) shift; command_verify "$@" ;;
   resolve) shift; command_resolve "$@" ;;
+  repair) shift; command_repair "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

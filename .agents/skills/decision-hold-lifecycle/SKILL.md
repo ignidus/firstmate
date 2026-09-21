@@ -22,6 +22,7 @@ A completed investigation, an ended visual review, and a completed backlog sweep
 Run the command in the originating work's authoritative `FM_HOME`; main-home work creates main-home holds, and secondmate-owned work creates holds in that secondmate home's backlog rather than copying them into the main backlog.
 Do not close a hold merely because the originating investigation completed, its report was archived, its visual review ended, or its task was torn down.
 The hold remains the authoritative Captain's Call item until the John's answer is durably recorded, dependent work is created in the same backlog and blocked by that hold, and `bin/fm-decision-hold.sh resolve` routes the answer by clearing those dependency edges before closing the hold.
+When a hold was already closed outside that script, or a key turns out never to have carried a John decision at all, stamp the closed record with `bin/fm-decision-hold.sh repair` and say explicitly which of those two it is; the durable-record gate itself is never relaxed to accept an unstamped closed record.
 Resolved findings, recommendations that need no captain choice, and prose that merely sounds decision-like do not create holds.
 Bearings reads the resulting structured state and must never compensate by scraping historical reports, visual-review artifacts, terminal output, chat, or other prose.
 
@@ -34,7 +35,8 @@ Bearings reads the resulting structured state and must never compensate by scrap
 5. Relay the choices to John as decisions from Bearings' Captain's Call section under `AGENTS.md` section 9; do not use the word hold in captain chat.
 6. After John decides, record dependent work with normal tasks-axi commands and block it by the hold identity.
 7. Put John's exact durable decision in a file and use the script's `resolve` command with every routed task.
-8. Confirm Bearings no longer shows the closed hold and that routed work remains in structured backlog state.
+8. If a record was closed outside the script, put the durable decision, or the account of why the key was never a decision, in a file and use the script's `repair` command before treating the origin as verifiable.
+9. Confirm Bearings no longer shows the closed hold and that routed work remains in structured backlog state.
 
 `bin/fm-decision-hold.sh --help` owns command syntax, identity construction, completion attestation, retry behavior, and close ordering.
 `docs/decision-hold-lifecycle.md` records the mechanism and regression evidence without restating this policy.

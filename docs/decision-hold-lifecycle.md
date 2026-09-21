@@ -28,6 +28,14 @@ It records the decision digest and routed task identities as a retry identity in
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 A failed intermediate step leaves the hold open.
 
+The `repair` subcommand is the only supported way to stamp that same attestation onto a captain identity that was already closed outside the script, which both `hold` and `resolve` refuse to touch.
+It requires an existing kind `captain` identity that is already Done and reuses the `resolve` body and retry identity, so `verify` accepts the record afterwards without loosening any acceptance rule.
+The body records which of two mutually exclusive facts is stamped: a real captain decision closed by hand, or, with `--never-a-decision` and its own `--note-file`, a key that never carried a captain decision at all.
+Neither input is inferred from the other, and the two shapes cannot be combined.
+It archives the superseded body, clears the dependency edge a hand-closed identity leaves recorded on routed work, and stamps the attestation last, so an interrupted repair leaves the record unstamped.
+An identical retry is idempotent, while a retry recording a different decision, routed set, or repair kind fails.
+A closed record carrying no attestation is still refused, so the durable-record gate keeps distinguishing a record written through the script from one somebody marked done.
+
 ## Structured read surfaces
 
 `bin/fm-fleet-snapshot.sh` parses canonical tasks-axi `(hold: ...)` and `(hold-kind: captain)` metadata alongside existing backlog fields.
@@ -43,11 +51,14 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Closed-record `repair` verification date: 2026-09-21.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+The `repair` regression reproduces a captain hold closed by a plain `tasks-axi done` plus a hand-written note, confirms `verify` and scout teardown still refuse that unstamped record, and then covers stamping a real hand-closed decision, recording a key that never carried a decision, refusal on an open, absent, non-captain, or already-resolved identity, an idempotent identical retry, and a loud failure when a retry records a different decision, routed set, or repair kind.
+It also proves an origin whose metadata still lists the stale key passes `verify` after the repair without any metadata rewrite.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -62,6 +73,9 @@ ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
+ok - repair stamps a hand-closed captain decision, is idempotent, and refuses conflicting retries
+ok - repair records a never-a-decision key distinctly and never implies a real decision
+ok - repair refuses open, absent, non-captain, and already-resolved identities
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization preserves strict roles and resolves every blocker compatibly
@@ -78,14 +92,19 @@ $ bash tests/fm-brief.test.sh
 ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
 
 $ bash tests/fm-teardown.test.sh
-all teardown safety cases passed
+ok - no-mistakes worktree with genuinely unlanded work is refused (safety preserved)
+ok - herdr flat teardown never erases records when pane presence is unparseable
+not ok - herdr-preflight-missing-adapter: the retryable pre-return refusal was not explained visibly
 
 $ bin/fm-lint.sh
 fm-lint.sh: ShellCheck 0.11.0 (pinned 0.11.0)
 
+$ bin/fm-doc-audience-check.sh
+fm-doc-audience-check: ok surfaces=62 local_links=178
+
 $ git diff --check
 (no output)
-
-$ for test_script in tests/*.test.sh; do bash "$test_script"; done
-ALL 71 TEST SCRIPTS PASSED
 ```
+
+The one `not ok` line above is an unrelated pre-existing failure in the Herdr preflight case, not a decision-hold regression.
+It reproduces identically on the base commit `c422878` from a pristine `git archive HEAD` export, so no decision-hold change introduced or masks it.
