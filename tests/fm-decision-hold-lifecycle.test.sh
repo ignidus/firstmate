@@ -686,24 +686,60 @@ test_repair_records_a_key_that_was_never_a_decision() {
   printf 'The default key was an unkeyed status artifact, not a captain choice.\n' \
     > "$home/placeholder-note.txt"
   printf 'Pick the sample default.\n' > "$home/placeholder-decision.txt"
+  # Each refusal below asserts the message that names its own guard. Without that,
+  # a case supplying only one of the two file flags still fails once the guard is
+  # gone - just on the later required-argument check - so the mutual exclusion
+  # would look covered while nothing actually held it.
   if run_decisions "$home" repair "$id" default --never-a-decision \
     --decision-file "$home/placeholder-decision.txt" \
     > "$home/mixed-decision.out" 2> "$home/mixed-decision.err"; then
     fail "a never-a-decision repair accepted a captain decision record"
   fi
+  assert_grep "cannot be combined with --decision-file" "$home/mixed-decision.err" \
+    "a never-a-decision repair must refuse a decision record by name"
   if run_decisions "$home" repair "$id" default --never-a-decision \
     --note-file "$home/placeholder-note.txt" --routed-to "$id" \
     > "$home/mixed-routes.out" 2> "$home/mixed-routes.err"; then
     fail "a never-a-decision repair accepted routed work"
   fi
+  assert_grep "cannot be combined with --routed-to" "$home/mixed-routes.err" \
+    "a never-a-decision repair must refuse routed work by name"
   if run_decisions "$home" repair "$id" default --note-file "$home/placeholder-note.txt" \
     > "$home/implied-never.out" 2> "$home/implied-never.err"; then
     fail "a note file alone implied a never-a-decision repair"
   fi
+  assert_grep "requires --never-a-decision" "$home/implied-never.err" \
+    "a note file alone must be refused for lacking the explicit never-a-decision input"
   if run_decisions "$home" repair "$id" default --never-a-decision \
     > "$home/missing-note.out" 2> "$home/missing-note.err"; then
     fail "a never-a-decision repair accepted no durable record at all"
   fi
+  assert_grep "requires its own --note-file" "$home/missing-note.err" \
+    "a never-a-decision repair must demand its own note file by name"
+
+  # Supplying BOTH durable records at once is the shape where a missing exclusion
+  # guard silently picks one and discards the other, rather than erroring on a
+  # later required-argument check. Each mode must refuse the other mode's record
+  # even when its own record is present and otherwise sufficient.
+  if run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/placeholder-note.txt" \
+    --decision-file "$home/placeholder-decision.txt" \
+    > "$home/both-never.out" 2> "$home/both-never.err"; then
+    fail "a never-a-decision repair stamped a placeholder while a real decision record was supplied"
+  fi
+  assert_grep "cannot be combined with --decision-file" "$home/both-never.err" \
+    "a never-a-decision repair must refuse a decision record even when its note file is present"
+  if run_decisions "$home" repair "$id" default \
+    --decision-file "$home/placeholder-decision.txt" \
+    --note-file "$home/placeholder-note.txt" --routed-to "$id" \
+    > "$home/both-decided.out" 2> "$home/both-decided.err"; then
+    fail "a real-decision repair stamped a decision while a never-a-decision note was supplied"
+  fi
+  assert_grep "requires --never-a-decision" "$home/both-decided.err" \
+    "a real-decision repair must refuse a note file even when its decision record is present"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "a refused mutually-exclusive repair stamped an attestation anyway"
 
   run_decisions "$home" repair "$id" default --never-a-decision \
     --note-file "$home/placeholder-note.txt" >/dev/null \
