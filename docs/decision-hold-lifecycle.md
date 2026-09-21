@@ -92,7 +92,17 @@ $ bash tests/fm-brief.test.sh
 ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
 
 $ bash tests/fm-teardown.test.sh
+ok - local-only worktree with HEAD on a fork remote is torn down (fix holds)
+ok - teardown prompts tasks-axi backlog refresh when compatible
+ok - teardown honors config/backlog-backend=manual even when tasks-axi is compatible
+ok - local-only worktree with truly unpushed work is refused (safety preserved)
+ok - local-only worktree with work merged into local main is torn down (no regression)
+ok - no-mistakes worktree with HEAD on origin is torn down (no regression)
 ok - no-mistakes worktree with genuinely unlanded work is refused (safety preserved)
+ok - local-only worktree with unpushed work is torn down under --force (escape hatch)
+ok - teardown completes when an exact busy-state sidecar is already absent
+ok - herdr teardown removes pane-owned escalation dedupe state
+ok - herdr flat teardown refuses before returning the isolated copy under lock contention and the retry completes cleanly
 ok - herdr flat teardown never erases records when pane presence is unparseable
 not ok - herdr-preflight-missing-adapter: the retryable pre-return refusal was not explained visibly
 

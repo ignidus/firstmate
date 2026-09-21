@@ -502,8 +502,8 @@ command_repair() {
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --decision-file) shift; decision_file=${1:-} ;;
-      --note-file) shift; note_file=${1:-} ;;
+      --decision-file) shift; [ "$#" -gt 0 ] || fail "--decision-file requires a path"; decision_file=$1 ;;
+      --note-file) shift; [ "$#" -gt 0 ] || fail "--note-file requires a path"; note_file=$1 ;;
       --never-a-decision) never=1 ;;
       --routed-to) shift; validate_slug routed-task "${1:-}"; routed="${routed}${routed:+ }${1:-}" ;;
       *) usage >&2; exit 2 ;;

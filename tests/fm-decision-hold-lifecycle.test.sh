@@ -745,6 +745,19 @@ test_repair_refuses_open_missing_and_non_captain_identities() {
     > "$home/data/$id/report.md"
   printf 'Pick the sample refusal route.\n' > "$home/refusal-decision.txt"
 
+  if run_decisions "$home" repair "$id" open-choice --decision-file \
+    > "$home/novalue.out" 2> "$home/novalue.err"; then
+    fail "repair accepted --decision-file with no path"
+  fi
+  assert_grep "--decision-file requires a path" "$home/novalue.err" \
+    "a value-less --decision-file must be refused by name"
+  if run_decisions "$home" repair "$id" open-choice --never-a-decision --note-file \
+    > "$home/novalue-note.out" 2> "$home/novalue-note.err"; then
+    fail "repair accepted --note-file with no path"
+  fi
+  assert_grep "--note-file requires a path" "$home/novalue-note.err" \
+    "a value-less --note-file must be refused by name"
+
   hold=$(run_decisions "$home" hold "$id" open-choice \
     --title "Choose the sample refusal route" --reason "captain refusal choice pending" --repo sample) \
     || fail "could not register the open hold"
