@@ -550,6 +550,315 @@ test_resolve_matches_quoted_blocked_by_edges() {
   pass "resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id"
 }
 
+
+# A captain hold closed by hand - a plain tasks-axi done plus a hand-written note -
+# satisfies neither shape verify_hold_durable accepts, so scout teardown stays
+# blocked forever. repair is the supported stamp that makes the closed record
+# durable again without loosening that gate.
+test_repair_stamps_a_hand_closed_captain_decision() {
+  local home id hold show json
+  home=$(make_home repair-hand-closed)
+  id=sample-hand-closed-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample hand-closed decision" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create hand-closed origin fixture"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample hand-closed review\n\nOne captain choice was answered outside the lifecycle.\n' \
+    > "$home/data/$id/report.md"
+  hold=$(run_decisions "$home" hold "$id" route \
+    --title "Choose the sample route" --reason "captain route choice pending" --repo sample) \
+    || fail "could not register the route hold"
+  run_decisions "$home" complete "$id" route >/dev/null \
+    || fail "could not record the decision inventory"
+  assert_grep "decision_keys=route" "$home/state/$id.meta" "inventory fixture did not record the key"
+  tasks_in "$home" add sample-hand-route-impl "Apply the hand-chosen sample route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create dependent work fixture"
+
+  # The exact observed loss: closed outside the script, with prose instead of the
+  # script's own attestation, and the dependency edge left stuck behind it.
+  tasks_in "$home" update "$hold" --body "Captain chose route north on 2026-09-17." >/dev/null \
+    || fail "could not write the hand-written closure note"
+  tasks_in "$home" unhold "$hold" >/dev/null || fail "could not release the hold by hand"
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the hold by hand"
+  if run_decisions "$home" verify "$id" > "$home/pre-verify.out" 2> "$home/pre-verify.err"; then
+    fail "verify accepted a hand-closed captain record without the script's attestation"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/pre-verify.err" \
+    "the durable-record gate must stay strict for a hand-closed record"
+  show=$(tasks_in "$home" show sample-hand-route-impl --full)
+  assert_contains "$show" "blocked-by:$hold" \
+    "the hand-closed fixture must leave its recorded dependency edge behind"
+  if run_teardown "$home" "$id" > "$home/pre-teardown.out" 2> "$home/pre-teardown.err"; then
+    fail "teardown proceeded while the hand-closed record was unverifiable"
+  fi
+  if run_decisions "$home" hold "$id" route \
+    --title "Choose the sample route" --reason "captain route choice pending" --repo sample \
+    > "$home/reopen.out" 2> "$home/reopen.err"; then
+    fail "hold reopened an already-closed identity"
+  fi
+  printf 'Use route north for the sample system.\n' > "$home/hand-decision.txt"
+  if run_decisions "$home" resolve "$id" route --decision-file "$home/hand-decision.txt" \
+    --routed-to sample-hand-route-impl > "$home/closed-resolve.out" 2> "$home/closed-resolve.err"; then
+    fail "resolve closed an already-closed identity"
+  fi
+
+  run_decisions "$home" repair "$id" route --decision-file "$home/hand-decision.txt" \
+    --routed-to sample-hand-route-impl >/dev/null \
+    || fail "repair could not stamp the hand-closed captain decision"
+  run_decisions "$home" verify "$id" >/dev/null \
+    || fail "verify still refused an origin whose metadata records the repaired key"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "repair reopened the closed record"
+  assert_contains "$show" "Resolution recorded by fm-decision-hold" "repair did not stamp the attestation"
+  assert_contains "$show" "closed outside fm-decision-hold" "repair did not state which fact it stamped"
+  assert_contains "$show" "Use route north for the sample system." "repair lost the durable decision record"
+  assert_grep "Captain chose route north on 2026-09-17." "$home/data/note-archive.md" \
+    "repair discarded the superseded hand-written note"
+  show=$(tasks_in "$home" show sample-hand-route-impl --full)
+  assert_contains "$show" "deps: none" "repair left the recorded dependency edge in place"
+  json=$(run_bearings "$home") || fail "Bearings failed after the repair"
+  printf '%s' "$json" | jq -e --arg hold "$hold" '
+    .decisions_open | any(.id == $hold) | not
+  ' >/dev/null || fail "a repaired decision still surfaced as an open captain call: $json"
+
+  run_decisions "$home" repair "$id" route --decision-file "$home/hand-decision.txt" \
+    --routed-to sample-hand-route-impl >/dev/null \
+    || fail "an identical repair retry was not idempotent"
+  printf 'Use route south for the sample system.\n' > "$home/changed-hand-decision.txt"
+  if run_decisions "$home" repair "$id" route --decision-file "$home/changed-hand-decision.txt" \
+    --routed-to sample-hand-route-impl > "$home/drift-decision.out" 2> "$home/drift-decision.err"; then
+    fail "a repair retry accepted a different captain decision"
+  fi
+  assert_grep "records a different captain decision" "$home/drift-decision.err" \
+    "a conflicting decision retry must fail loudly"
+  tasks_in "$home" add sample-hand-route-followup "Check the hand-chosen sample route" \
+    --kind ship --repo sample >/dev/null \
+    || fail "could not create the second dependent fixture"
+  if run_decisions "$home" repair "$id" route --decision-file "$home/hand-decision.txt" \
+    --routed-to sample-hand-route-impl --routed-to sample-hand-route-followup \
+    > "$home/drift-routes.out" 2> "$home/drift-routes.err"; then
+    fail "a repair retry accepted a different routed task set"
+  fi
+  assert_grep "records different routed work" "$home/drift-routes.err" \
+    "a conflicting routed-set retry must fail loudly"
+  printf 'The key never carried a captain decision.\n' > "$home/hand-note.txt"
+  if run_decisions "$home" repair "$id" route --never-a-decision --note-file "$home/hand-note.txt" \
+    > "$home/drift-kind.out" 2> "$home/drift-kind.err"; then
+    fail "a repair retry voided a stamped real decision as a never-a-decision key"
+  fi
+  assert_grep "different resolution record" "$home/drift-kind.err" \
+    "a conflicting repair-kind retry must fail loudly"
+
+  run_teardown "$home" "$id" >/dev/null 2> "$home/teardown.err" \
+    || fail "teardown still refused after the repair: $(cat "$home/teardown.err")"
+  pass "repair stamps a hand-closed captain decision, is idempotent, and refuses conflicting retries"
+}
+
+# The cyb40-decision-default shape: a key that was closed by hand and never
+# carried a captain decision at all. Recording that is a distinct explicit input
+# and must never be implied by, or imply, a real decision record.
+test_repair_records_a_key_that_was_never_a_decision() {
+  local home id hold show
+  home=$(make_home repair-never-a-decision)
+  id=sample-placeholder-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample placeholder key" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create placeholder origin fixture"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample placeholder review\n\nThe placeholder key never needed a captain choice.\n' \
+    > "$home/data/$id/report.md"
+  hold=$(run_decisions "$home" hold "$id" default \
+    --title "Choose the sample default" --reason "placeholder captain choice" --repo sample) \
+    || fail "could not register the placeholder hold"
+  run_decisions "$home" complete "$id" default >/dev/null \
+    || fail "could not record the placeholder inventory"
+  tasks_in "$home" unhold "$hold" >/dev/null || fail "could not release the placeholder by hand"
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the placeholder by hand"
+  if run_decisions "$home" verify "$id" > "$home/pre-verify.out" 2> "$home/pre-verify.err"; then
+    fail "verify accepted a hand-closed placeholder without the script's attestation"
+  fi
+
+  printf 'The default key was an unkeyed status artifact, not a captain choice.\n' \
+    > "$home/placeholder-note.txt"
+  printf 'Pick the sample default.\n' > "$home/placeholder-decision.txt"
+  # Each refusal below asserts the message that names its own guard. Without that,
+  # a case supplying only one of the two file flags still fails once the guard is
+  # gone - just on the later required-argument check - so the mutual exclusion
+  # would look covered while nothing actually held it.
+  if run_decisions "$home" repair "$id" default --never-a-decision \
+    --decision-file "$home/placeholder-decision.txt" \
+    > "$home/mixed-decision.out" 2> "$home/mixed-decision.err"; then
+    fail "a never-a-decision repair accepted a captain decision record"
+  fi
+  assert_grep "cannot be combined with --decision-file" "$home/mixed-decision.err" \
+    "a never-a-decision repair must refuse a decision record by name"
+  if run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/placeholder-note.txt" --routed-to "$id" \
+    > "$home/mixed-routes.out" 2> "$home/mixed-routes.err"; then
+    fail "a never-a-decision repair accepted routed work"
+  fi
+  assert_grep "cannot be combined with --routed-to" "$home/mixed-routes.err" \
+    "a never-a-decision repair must refuse routed work by name"
+  if run_decisions "$home" repair "$id" default --note-file "$home/placeholder-note.txt" \
+    > "$home/implied-never.out" 2> "$home/implied-never.err"; then
+    fail "a note file alone implied a never-a-decision repair"
+  fi
+  assert_grep "requires --never-a-decision" "$home/implied-never.err" \
+    "a note file alone must be refused for lacking the explicit never-a-decision input"
+  if run_decisions "$home" repair "$id" default --never-a-decision \
+    > "$home/missing-note.out" 2> "$home/missing-note.err"; then
+    fail "a never-a-decision repair accepted no durable record at all"
+  fi
+  assert_grep "requires its own --note-file" "$home/missing-note.err" \
+    "a never-a-decision repair must demand its own note file by name"
+
+  # Supplying BOTH durable records at once is the shape where a missing exclusion
+  # guard silently picks one and discards the other, rather than erroring on a
+  # later required-argument check. Each mode must refuse the other mode's record
+  # even when its own record is present and otherwise sufficient.
+  if run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/placeholder-note.txt" \
+    --decision-file "$home/placeholder-decision.txt" \
+    > "$home/both-never.out" 2> "$home/both-never.err"; then
+    fail "a never-a-decision repair stamped a placeholder while a real decision record was supplied"
+  fi
+  assert_grep "cannot be combined with --decision-file" "$home/both-never.err" \
+    "a never-a-decision repair must refuse a decision record even when its note file is present"
+  if run_decisions "$home" repair "$id" default \
+    --decision-file "$home/placeholder-decision.txt" \
+    --note-file "$home/placeholder-note.txt" --routed-to "$id" \
+    > "$home/both-decided.out" 2> "$home/both-decided.err"; then
+    fail "a real-decision repair stamped a decision while a never-a-decision note was supplied"
+  fi
+  assert_grep "requires --never-a-decision" "$home/both-decided.err" \
+    "a real-decision repair must refuse a note file even when its decision record is present"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "a refused mutually-exclusive repair stamped an attestation anyway"
+
+  run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/placeholder-note.txt" >/dev/null \
+    || fail "repair could not record a key that was never a captain decision"
+  run_decisions "$home" verify "$id" >/dev/null \
+    || fail "verify still refused an origin whose metadata records the repaired placeholder key"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "the placeholder repair reopened the closed record"
+  assert_contains "$show" "never a captain decision" \
+    "the placeholder repair did not state which fact it stamped"
+  assert_not_contains "$show" "closed outside fm-decision-hold" \
+    "the placeholder repair claimed a real captain decision"
+  run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/placeholder-note.txt" >/dev/null \
+    || fail "an identical placeholder repair retry was not idempotent"
+  printf 'A different account of the placeholder key.\n' > "$home/changed-note.txt"
+  if run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/changed-note.txt" > "$home/note-drift.out" 2> "$home/note-drift.err"; then
+    fail "a placeholder repair retry accepted a different durable record"
+  fi
+  run_teardown "$home" "$id" >/dev/null 2> "$home/teardown.err" \
+    || fail "teardown still refused after the placeholder repair: $(cat "$home/teardown.err")"
+  pass "repair records a never-a-decision key distinctly and never implies a real decision"
+}
+
+# repair must never become a way to void an open decision, adopt a foreign
+# identity, or restamp a record resolve already closed correctly.
+test_repair_refuses_open_missing_and_non_captain_identities() {
+  local home id hold show
+  home=$(make_home repair-refusals)
+  id=sample-refusal-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample repair refusals" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create refusal origin fixture"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample refusal review\n\nOne open choice, one absent key, one foreign identity.\n' \
+    > "$home/data/$id/report.md"
+  printf 'Pick the sample refusal route.\n' > "$home/refusal-decision.txt"
+
+  if run_decisions "$home" repair "$id" open-choice --decision-file \
+    > "$home/novalue.out" 2> "$home/novalue.err"; then
+    fail "repair accepted --decision-file with no path"
+  fi
+  assert_grep "--decision-file requires a path" "$home/novalue.err" \
+    "a value-less --decision-file must be refused by name"
+  if run_decisions "$home" repair "$id" open-choice --never-a-decision --note-file \
+    > "$home/novalue-note.out" 2> "$home/novalue-note.err"; then
+    fail "repair accepted --note-file with no path"
+  fi
+  assert_grep "--note-file requires a path" "$home/novalue-note.err" \
+    "a value-less --note-file must be refused by name"
+
+  hold=$(run_decisions "$home" hold "$id" open-choice \
+    --title "Choose the sample refusal route" --reason "captain refusal choice pending" --repo sample) \
+    || fail "could not register the open hold"
+  tasks_in "$home" add sample-refusal-impl "Apply the sample refusal route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the refusal dependent"
+  if run_decisions "$home" repair "$id" open-choice --decision-file "$home/refusal-decision.txt" \
+    --routed-to sample-refusal-impl > "$home/open.out" 2> "$home/open.err"; then
+    fail "repair voided a genuinely open captain decision"
+  fi
+  assert_grep "is not closed" "$home/open.err" "an open identity must be refused as not closed"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: queued" "the refused repair closed an open hold"
+  assert_contains "$show" "held: yes" "the refused repair released an open hold"
+  show=$(tasks_in "$home" show sample-refusal-impl --full)
+  assert_contains "$show" "blocked: yes" "the refused repair cleared an open decision's dependency edge"
+
+  if run_decisions "$home" repair "$id" absent-choice --decision-file "$home/refusal-decision.txt" \
+    --routed-to sample-refusal-impl > "$home/absent.out" 2> "$home/absent.err"; then
+    fail "repair invented a record for an identity that does not exist"
+  fi
+  assert_grep "is absent from" "$home/absent.err" "a missing identity must be refused as absent"
+  assert_no_grep "$id-decision-absent-choice" "$home/data/backlog.md" \
+    "the refused repair created a backlog identity"
+
+  tasks_in "$home" add "$id-decision-ship-choice" "A foreign ship identity" \
+    --kind ship --repo sample >/dev/null || fail "could not create the foreign identity fixture"
+  tasks_in "$home" "done" "$id-decision-ship-choice" >/dev/null \
+    || fail "could not close the foreign identity fixture"
+  if run_decisions "$home" repair "$id" ship-choice --decision-file "$home/refusal-decision.txt" \
+    --routed-to sample-refusal-impl > "$home/foreign.out" 2> "$home/foreign.err"; then
+    fail "repair stamped a captain attestation onto a non-captain identity"
+  fi
+  assert_grep "is not kind captain" "$home/foreign.err" "a non-captain identity must be refused by kind"
+  show=$(tasks_in "$home" show "$id-decision-ship-choice" --full)
+  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "the refused repair wrote an attestation onto a non-captain identity"
+
+  hold=$(run_decisions "$home" hold "$id" dep-choice \
+    --title "Choose the sample dependent route" --reason "captain dependent choice pending" --repo sample) \
+    || fail "could not register the dependent-check hold"
+  tasks_in "$home" unhold "$hold" >/dev/null || fail "could not release the dependent-check hold"
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the dependent-check hold"
+  if run_decisions "$home" repair "$id" dep-choice --decision-file "$home/refusal-decision.txt" \
+    --routed-to sample-missing-dependent > "$home/missing-dep.out" 2> "$home/missing-dep.err"; then
+    fail "repair recorded routed work that does not exist"
+  fi
+  assert_grep "does not exist in the active home" "$home/missing-dep.err" \
+    "absent routed work must be refused by identity"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_not_contains "$show" "Resolution recorded by fm-decision-hold" \
+    "the refused repair stamped an attestation despite absent routed work"
+
+  run_decisions "$home" resolve "$id" open-choice --decision-file "$home/refusal-decision.txt" \
+    --routed-to sample-refusal-impl >/dev/null \
+    || fail "could not resolve the open decision through the ordinary path"
+  if run_decisions "$home" repair "$id" open-choice --decision-file "$home/refusal-decision.txt" \
+    --routed-to sample-refusal-impl > "$home/restamp.out" 2> "$home/restamp.err"; then
+    fail "repair restamped a record that resolve had already closed correctly"
+  fi
+  assert_grep "different resolution record" "$home/restamp.err" \
+    "a resolve-written record must not be silently repaired"
+  pass "repair refuses open, absent, non-captain, and already-resolved identities"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -560,3 +869,6 @@ test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
+test_repair_stamps_a_hand_closed_captain_decision
+test_repair_records_a_key_that_was_never_a_decision
+test_repair_refuses_open_missing_and_non_captain_identities
