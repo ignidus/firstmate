@@ -8,6 +8,9 @@ This document records the deterministic mechanism, structured surfaces, and priv
 `bin/fm-decision-hold.sh` is the only lifecycle command for an investigation, visual review, or backlog sweep pass's unresolved captain decisions.
 The command runs tasks-axi in the active `FM_HOME`, so the existing backlog remains the only durable work database and a secondmate-owned decision stays in the secondmate home.
 It never reads report bodies, review artifacts, terminal output, or chat.
+Every decision identity resolves to its newest record: the active backlog first, then the markdown archive that the home's `.tasks.toml` declares, because retention archives closed rows rather than deleting them and `tasks-axi show` reads only the active backlog.
+Each archive section that mentions the identity is rewritten under the active backlog's section headings and parsed by tasks-axi itself, so only a closed archived row is ever readable and an archived record can only meet the durably-resolved shape.
+A refusal for a missing identity names both paths it searched.
 
 The `hold` subcommand maps an originating work id and stable decision key to `<origin-id>-decision-<decision-key>`.
 It creates a kind `captain` backlog item when absent and invokes `tasks-axi hold <id> --reason <reason> --kind captain` on every retry.
@@ -33,6 +36,7 @@ It requires an existing kind `captain` identity that is already Done and reuses 
 The body records which of two mutually exclusive facts is stamped: a real captain decision closed by hand, or, with `--never-a-decision` and its own `--note-file`, a key that never carried a captain decision at all.
 Neither input is inferred from the other, and the two shapes cannot be combined.
 It archives the superseded body, clears the dependency edge a hand-closed identity leaves recorded on routed work, and stamps the attestation last, so an interrupted repair leaves the record unstamped.
+tasks-axi never rewrites its archive, so for an archived identity the stamp is a new snapshot that `tasks-axi prune` appends to that archive, the earlier snapshot stays as the superseded body, and neither the active backlog nor retention changes.
 An identical retry is idempotent, while a retry recording a different decision, routed set, or repair kind fails.
 A closed record carrying no attestation is still refused, so the durable-record gate keeps distinguishing a record written through the script from one somebody marked done.
 
@@ -52,6 +56,7 @@ Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
 Closed-record `repair` verification date: 2026-09-21.
+Archived-identity lookup verification date: 2026-09-26, against tasks-axi 0.2.4.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
@@ -59,6 +64,11 @@ The initial Bearings snapshot correctly has no open decision, and the new teardo
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
 The `repair` regression reproduces a captain hold closed by a plain `tasks-axi done` plus a hand-written note, confirms `verify` and scout teardown still refuse that unstamped record, and then covers stamping a real hand-closed decision, recording a key that never carried a decision, refusal on an open, absent, non-captain, or already-resolved identity, an idempotent identical retry, and a loud failure when a retry records a different decision, routed set, or repair kind.
 It also proves an origin whose metadata still lists the stale key passes `verify` after the repair without any metadata rewrite.
+The archived-identity regression runs real `tasks-axi prune` so the active backlog no longer shows the identity, then proves a resolved hold stays verifiable, retry-safe, and impossible to recreate.
+It proves a hand-closed decision archived in one section with the origin it routes to is judged on its merits, then repaired by appending exactly one stamped snapshot while the active backlog, the earlier snapshot, and the unrelated row stay unchanged.
+It covers never-a-decision keys stamped before and after archiving, identical-retry idempotence with no second append, and loud failure on a changed decision, routed set, or repair kind.
+It proves both repair shapes refuse an absent, non-captain, or queued-state-archived still-open identity without writing the archive, and that each refusal names both paths searched.
+All four of those cases fail against the unmodified script.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -76,6 +86,10 @@ ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuin
 ok - repair stamps a hand-closed captain decision, is idempotent, and refuses conflicting retries
 ok - repair records a never-a-decision key distinctly and never implies a real decision
 ok - repair refuses open, absent, non-captain, and already-resolved identities
+ok - a resolved hold stays verifiable, retry-safe, and taken after retention archives it
+ok - repair stamps an archived hand-closed decision by appending to its archive, idempotently
+ok - archived never-a-decision keys verify and repair in either retention order
+ok - the archive fallback refuses absent, still-open, and non-captain identities under both repair shapes
 
 $ bash tests/fm-fleet-snapshot-view.test.sh
 ok - backlog normalization preserves strict roles and resolves every blocker compatibly
@@ -117,4 +131,4 @@ $ git diff --check
 ```
 
 The one `not ok` line above is an unrelated pre-existing failure in the Herdr preflight case, not a decision-hold regression.
-It reproduces identically on the base commit `c422878` from a pristine `git archive HEAD` export, so no decision-hold change introduced or masks it.
+It reproduces identically on the base commits `c422878` and `5ea01d3` from pristine `git archive HEAD` exports, so no decision-hold change introduced or masks it.

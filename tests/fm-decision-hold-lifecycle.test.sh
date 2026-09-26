@@ -859,6 +859,311 @@ test_repair_refuses_open_missing_and_non_captain_identities() {
   pass "repair refuses open, absent, non-captain, and already-resolved identities"
 }
 
+archive_rows() {  # <home> <id>
+  grep -c -- "^- \[.\] $2 - " "$1/data/done-archive.md" || true
+}
+
+backlog_rows() {  # <home> <id>
+  grep -c -- "^- \[.\] $2 - " "$1/data/backlog.md" || true
+}
+
+# Retention archives Done rows rather than deleting them, and tasks-axi show reads
+# only the active backlog. A correctly resolved hold must stay verifiable, and its
+# identity must stay taken, after retention moves it into the archive.
+test_resolved_hold_stays_verifiable_after_archiving() {
+  local home id hold show
+  home=$(make_home archived-resolved)
+  id=sample-archived-resolved-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample archived route" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived-resolved origin fixture"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample archived route review\n\nOne route choice was resolved.\n' > "$home/data/$id/report.md"
+  hold=$(run_decisions "$home" hold "$id" route \
+    --title "Choose the sample archived route" --reason "captain route choice pending" --repo sample) \
+    || fail "could not register the archived-resolved hold"
+  run_decisions "$home" complete "$id" route >/dev/null || fail "could not record the inventory"
+  tasks_in "$home" add sample-archived-route-impl "Apply the sample archived route" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the archived-resolved dependent"
+  printf 'Use route east for the sample system.\n' > "$home/archived-decision.txt"
+  run_decisions "$home" resolve "$id" route --decision-file "$home/archived-decision.txt" \
+    --routed-to sample-archived-route-impl >/dev/null \
+    || fail "could not resolve the archived-resolved hold"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not archive the resolved hold"
+  if tasks_in "$home" show "$hold" >/dev/null 2>&1; then
+    fail "the fixture did not reproduce an identity the active backlog no longer shows"
+  fi
+  [ "$(archive_rows "$home" "$hold")" = 1 ] || fail "retention did not archive the resolved hold"
+
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/verify.err" \
+    || fail "verify called an archived resolved hold absent: $(cat "$home/verify.err")"
+  run_decisions "$home" resolve "$id" route --decision-file "$home/archived-decision.txt" \
+    --routed-to sample-archived-route-impl > "$home/retry.out" \
+    || fail "an identical resolve retry failed once the hold was archived"
+  assert_grep "resolved: $hold" "$home/retry.out" "the archived resolve retry did not report the resolution"
+  if run_decisions "$home" hold "$id" route \
+    --title "Choose the sample archived route" --reason "captain route choice pending" --repo sample \
+    > "$home/rehold.out" 2> "$home/rehold.err"; then
+    fail "hold recreated an identity the archive still holds as resolved"
+  fi
+  assert_grep "already durably resolved" "$home/rehold.err" \
+    "an archived resolved identity must be refused as already resolved"
+  [ "$(backlog_rows "$home" "$hold")" = 0 ] || fail "the refused hold recreated the archived identity"
+  [ "$(archive_rows "$home" "$hold")" = 1 ] || fail "a read-only lookup rewrote the archive"
+  show=$(tasks_in "$home" show sample-archived-route-impl --full)
+  assert_contains "$show" "state: queued" "the resolved decision's routed work changed state"
+  run_teardown "$home" "$id" >/dev/null 2> "$home/teardown.err" \
+    || fail "teardown refused an origin whose resolved hold was archived: $(cat "$home/teardown.err")"
+  pass "a resolved hold stays verifiable, retry-safe, and taken after retention archives it"
+}
+
+# The cyb25 shape: a captain decision closed by hand, then archived by retention
+# together with the origin it routes to. repair must reach it, append its stamp to
+# the archive as the last write, and leave retention and every check untouched.
+test_repair_stamps_an_archived_hand_closed_decision() {
+  local home id hold show before_backlog
+  home=$(make_home archived-hand-closed)
+  id=sample-archived-hand-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample archived hand-closed decision" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived hand-closed origin fixture"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample archived hand-closed review\n\nOne scope choice was answered by hand.\n' \
+    > "$home/data/$id/report.md"
+  hold=$(run_decisions "$home" hold "$id" scope \
+    --title "Choose the sample scope" --reason "captain scope choice pending" --repo sample) \
+    || fail "could not register the scope hold"
+  run_decisions "$home" complete "$id" scope >/dev/null || fail "could not record the inventory"
+  tasks_in "$home" add sample-archived-scope-impl "Apply the hand-chosen sample scope" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "could not create the archived hand-closed dependent"
+  tasks_in "$home" update "$hold" --body "Captain chose the narrow scope on 2026-09-17." >/dev/null \
+    || fail "could not write the hand-written closure note"
+  tasks_in "$home" unhold "$hold" >/dev/null || fail "could not release the hold by hand"
+  tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close the hold by hand"
+  tasks_in "$home" "done" "$id" >/dev/null || fail "could not close the origin"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not archive the hand-closed hold"
+  if tasks_in "$home" show "$hold" >/dev/null 2>&1; then
+    fail "the fixture did not reproduce an identity the active backlog no longer shows"
+  fi
+  [ "$(archive_rows "$home" "$id")" = 1 ] || fail "retention did not archive the origin with the hold"
+
+  if run_decisions "$home" verify "$id" > "$home/pre-verify.out" 2> "$home/pre-verify.err"; then
+    fail "verify accepted an archived hand-closed record without the script's attestation"
+  fi
+  assert_grep "neither actively held nor durably resolved" "$home/pre-verify.err" \
+    "an archived hand-closed record must be judged on its merits, not reported absent"
+  if run_teardown "$home" "$id" > "$home/pre-teardown.out" 2> "$home/pre-teardown.err"; then
+    fail "teardown proceeded while the archived hand-closed record was unverifiable"
+  fi
+  if run_decisions "$home" hold "$id" scope \
+    --title "Choose the sample scope" --reason "captain scope choice pending" --repo sample \
+    > "$home/reopen.out" 2> "$home/reopen.err"; then
+    fail "hold reopened an archived closed identity"
+  fi
+  [ "$(backlog_rows "$home" "$hold")" = 0 ] || fail "the refused hold recreated the archived identity"
+
+  before_backlog=$(cat "$home/data/backlog.md")
+  printf 'Use the narrow sample scope.\n' > "$home/scope-decision.txt"
+  run_decisions "$home" repair "$id" scope --decision-file "$home/scope-decision.txt" \
+    --routed-to "$id" --routed-to sample-archived-scope-impl > "$home/repair.out" 2> "$home/repair.err" \
+    || fail "repair could not reach an archived hand-closed decision: $(cat "$home/repair.err")"
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/verify.err" \
+    || fail "verify still refused the repaired archived decision: $(cat "$home/verify.err")"
+  [ "$(archive_rows "$home" "$hold")" = 2 ] || fail "repair did not append exactly one stamped snapshot"
+  [ "$(archive_rows "$home" "$id")" = 1 ] || fail "repair re-archived an unrelated row from the same section"
+  assert_grep "Captain chose the narrow scope on 2026-09-17." "$home/data/done-archive.md" \
+    "repair discarded the superseded hand-written snapshot"
+  assert_grep "closed outside fm-decision-hold" "$home/data/done-archive.md" \
+    "the appended snapshot did not state which fact it stamped"
+  assert_grep "Use the narrow sample scope." "$home/data/done-archive.md" \
+    "the appended snapshot lost the durable decision record"
+  show=$(tasks_in "$home" show sample-archived-scope-impl --full)
+  assert_contains "$show" "deps: none" "repair left the active routed edge in place"
+  [ "$(backlog_rows "$home" "$hold")" = 0 ] || fail "repair moved the archived identity back into the backlog"
+  show=$(sed '/sample-archived-scope-impl/d' "$home/data/backlog.md")
+  [ "$show" = "$(printf '%s\n' "$before_backlog" | sed '/sample-archived-scope-impl/d')" ] \
+    || fail "repair changed the backlog beyond clearing the routed edge"
+
+  run_decisions "$home" repair "$id" scope --decision-file "$home/scope-decision.txt" \
+    --routed-to "$id" --routed-to sample-archived-scope-impl >/dev/null \
+    || fail "an identical archived repair retry was not idempotent"
+  [ "$(archive_rows "$home" "$hold")" = 2 ] || fail "an identical retry appended another snapshot"
+  printf 'Use the wide sample scope.\n' > "$home/changed-scope-decision.txt"
+  if run_decisions "$home" repair "$id" scope --decision-file "$home/changed-scope-decision.txt" \
+    --routed-to "$id" --routed-to sample-archived-scope-impl \
+    > "$home/drift-decision.out" 2> "$home/drift-decision.err"; then
+    fail "an archived repair retry accepted a different captain decision"
+  fi
+  assert_grep "records a different captain decision" "$home/drift-decision.err" \
+    "a conflicting archived decision retry must fail loudly"
+  if run_decisions "$home" repair "$id" scope --decision-file "$home/scope-decision.txt" \
+    --routed-to "$id" > "$home/drift-routes.out" 2> "$home/drift-routes.err"; then
+    fail "an archived repair retry accepted a different routed task set"
+  fi
+  assert_grep "records different routed work" "$home/drift-routes.err" \
+    "a conflicting archived routed-set retry must fail loudly"
+  printf 'The scope key never carried a captain decision.\n' > "$home/scope-note.txt"
+  if run_decisions "$home" repair "$id" scope --never-a-decision --note-file "$home/scope-note.txt" \
+    > "$home/drift-kind.out" 2> "$home/drift-kind.err"; then
+    fail "an archived repair retry voided a stamped real decision as a never-a-decision key"
+  fi
+  assert_grep "different resolution record" "$home/drift-kind.err" \
+    "a conflicting archived repair-kind retry must fail loudly"
+  [ "$(archive_rows "$home" "$hold")" = 2 ] || fail "a refused retry appended a snapshot"
+
+  run_teardown "$home" "$id" >/dev/null 2> "$home/teardown.err" \
+    || fail "teardown still refused after the archived repair: $(cat "$home/teardown.err")"
+  pass "repair stamps an archived hand-closed decision by appending to its archive, idempotently"
+}
+
+# The cyb40 shape: a key that never carried a captain decision, reached in both
+# orders retention can produce - stamped and then archived, or archived unstamped
+# and stamped afterwards.
+test_archived_never_a_decision_key_repairs_and_verifies() {
+  local home id stamped unstamped hold
+  home=$(make_home archived-never-a-decision)
+  id=sample-archived-placeholder-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample archived placeholder keys" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived placeholder origin fixture"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample archived placeholder review\n\nTwo placeholder keys never needed a choice.\n' \
+    > "$home/data/$id/report.md"
+  stamped=$(run_decisions "$home" hold "$id" default \
+    --title "Choose the sample default" --reason "placeholder captain choice" --repo sample) \
+    || fail "could not register the stamped placeholder hold"
+  unstamped=$(run_decisions "$home" hold "$id" placeholder \
+    --title "Choose the sample placeholder" --reason "placeholder captain choice" --repo sample) \
+    || fail "could not register the unstamped placeholder hold"
+  run_decisions "$home" complete "$id" default placeholder >/dev/null \
+    || fail "could not record the placeholder inventory"
+  for hold in "$stamped" "$unstamped"; do
+    tasks_in "$home" unhold "$hold" >/dev/null || fail "could not release $hold by hand"
+    tasks_in "$home" "done" "$hold" >/dev/null || fail "could not close $hold by hand"
+  done
+  printf 'The default key was an unkeyed status artifact, not a captain choice.\n' \
+    > "$home/default-note.txt"
+  run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/default-note.txt" >/dev/null \
+    || fail "could not stamp the active placeholder before archiving"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not archive the placeholder holds"
+  if tasks_in "$home" show "$stamped" >/dev/null 2>&1; then
+    fail "the fixture did not reproduce an archived stamped placeholder"
+  fi
+
+  if run_decisions "$home" verify "$id" > "$home/pre-verify.out" 2> "$home/pre-verify.err"; then
+    fail "verify accepted an archived unstamped placeholder"
+  fi
+  assert_grep "$unstamped is neither actively held nor durably resolved" "$home/pre-verify.err" \
+    "verify must accept the archived stamped key and judge the unstamped one on its merits"
+  run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/default-note.txt" >/dev/null \
+    || fail "an identical retry against an archived stamped placeholder was not idempotent"
+  [ "$(archive_rows "$home" "$stamped")" = 1 ] || fail "an identical retry appended another snapshot"
+  printf 'A different account of the default key.\n' > "$home/changed-note.txt"
+  if run_decisions "$home" repair "$id" default --never-a-decision \
+    --note-file "$home/changed-note.txt" > "$home/note-drift.out" 2> "$home/note-drift.err"; then
+    fail "an archived placeholder retry accepted a different durable record"
+  fi
+  if run_decisions "$home" repair "$id" default --decision-file "$home/default-note.txt" \
+    --routed-to "$id" > "$home/kind-drift.out" 2> "$home/kind-drift.err"; then
+    fail "an archived placeholder retry was restamped as a real decision"
+  fi
+  assert_grep "different resolution record" "$home/kind-drift.err" \
+    "a conflicting archived repair-kind retry must fail loudly"
+
+  printf 'The placeholder key was a sample tool artifact, not a captain choice.\n' \
+    > "$home/placeholder-note.txt"
+  run_decisions "$home" repair "$id" placeholder --never-a-decision \
+    --note-file "$home/placeholder-note.txt" >/dev/null 2> "$home/repair.err" \
+    || fail "repair could not reach an archived unstamped placeholder: $(cat "$home/repair.err")"
+  [ "$(archive_rows "$home" "$unstamped")" = 2 ] || fail "repair did not append exactly one snapshot"
+  run_decisions "$home" verify "$id" >/dev/null 2> "$home/verify.err" \
+    || fail "verify refused archived placeholders after both repairs: $(cat "$home/verify.err")"
+  run_decisions "$home" repair "$id" placeholder --never-a-decision \
+    --note-file "$home/placeholder-note.txt" >/dev/null \
+    || fail "an identical retry of the archived placeholder repair was not idempotent"
+  [ "$(archive_rows "$home" "$unstamped")" = 2 ] || fail "an identical retry appended another snapshot"
+  pass "archived never-a-decision keys verify and repair in either retention order"
+}
+
+# The archive fallback must never become a way to adopt an absent, foreign, or
+# still-open identity, under either repair shape.
+test_archive_fallback_refuses_absent_open_and_non_captain_identities() {
+  local home id hold archive_before shape
+  home=$(make_home archived-refusals)
+  id=sample-archived-refusal-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate the sample archived refusals" \
+    --kind scout --repo sample --start >/dev/null \
+    || fail "could not create archived refusal origin fixture"
+  write_origin_meta "$home" "$id"
+  printf 'done: report complete\n' > "$home/state/$id.status"
+  printf '# Sample archived refusal review\n\nOne open choice, one absent key, one foreign identity.\n' \
+    > "$home/data/$id/report.md"
+  printf 'Pick the sample archived refusal route.\n' > "$home/refusal-decision.txt"
+  printf 'The key never carried a captain decision.\n' > "$home/refusal-note.txt"
+
+  tasks_in "$home" add "$id-decision-ship-choice" "A foreign archived ship identity" \
+    --kind ship --repo sample >/dev/null || fail "could not create the foreign identity fixture"
+  tasks_in "$home" "done" "$id-decision-ship-choice" >/dev/null \
+    || fail "could not close the foreign identity fixture"
+  hold=$(run_decisions "$home" hold "$id" open-choice \
+    --title "Choose the sample archived open route" --reason "captain open choice pending" --repo sample) \
+    || fail "could not register the open hold"
+  run_decisions "$home" complete "$id" open-choice >/dev/null || fail "could not record the inventory"
+  tasks_in "$home" prune --keep 0 >/dev/null || fail "could not archive the foreign identity"
+  tasks_in "$home" prune --state queued --keep 0 >/dev/null || fail "could not archive the open hold"
+  if tasks_in "$home" show "$hold" >/dev/null 2>&1; then
+    fail "the fixture did not reproduce an archived still-open hold"
+  fi
+  [ "$(archive_rows "$home" "$hold")" = 1 ] || fail "retention did not archive the open hold"
+  tasks_in "$home" add sample-archived-refusal-impl "Apply the sample archived refusal route" \
+    --kind ship --repo sample >/dev/null || fail "could not create the refusal routed task"
+  archive_before=$(cat "$home/data/done-archive.md")
+
+  if run_decisions "$home" verify "$id" > "$home/open-verify.out" 2> "$home/open-verify.err"; then
+    fail "verify accepted an archived still-open hold as actively held"
+  fi
+  assert_grep "is absent from $home/data/backlog.md and its archive $home/data/done-archive.md" \
+    "$home/open-verify.err" "the refusal must name both paths actually searched"
+  for shape in decided never; do
+    set -- --decision-file "$home/refusal-decision.txt" --routed-to sample-archived-refusal-impl
+    [ "$shape" = decided ] || set -- --never-a-decision --note-file "$home/refusal-note.txt"
+    if run_decisions "$home" repair "$id" open-choice "$@" \
+      > "$home/open-$shape.out" 2> "$home/open-$shape.err"; then
+      fail "a $shape repair adopted an archived still-open hold"
+    fi
+    assert_grep "is absent from $home/data/backlog.md and its archive" "$home/open-$shape.err" \
+      "a $shape repair must refuse an archived still-open hold"
+    if run_decisions "$home" repair "$id" absent-choice "$@" \
+      > "$home/absent-$shape.out" 2> "$home/absent-$shape.err"; then
+      fail "a $shape repair invented a record for an identity that does not exist"
+    fi
+    assert_grep "is absent from $home/data/backlog.md and its archive $home/data/done-archive.md" \
+      "$home/absent-$shape.err" "a $shape repair must name both paths it searched"
+    if run_decisions "$home" repair "$id" ship-choice "$@" \
+      > "$home/foreign-$shape.out" 2> "$home/foreign-$shape.err"; then
+      fail "a $shape repair stamped a captain attestation onto an archived non-captain identity"
+    fi
+    assert_grep "is not kind captain" "$home/foreign-$shape.err" \
+      "a $shape repair must refuse an archived non-captain identity by kind"
+  done
+  [ "$(cat "$home/data/done-archive.md")" = "$archive_before" ] \
+    || fail "a refused archive lookup or repair wrote to the archive"
+  assert_no_grep "$id-decision-" "$home/data/backlog.md" \
+    "a refused repair brought an archived identity back into the backlog"
+  pass "the archive fallback refuses absent, still-open, and non-captain identities under both repair shapes"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
 test_scout_teardown_always_requires_inventory_verification
@@ -872,3 +1177,7 @@ test_resolve_matches_quoted_blocked_by_edges
 test_repair_stamps_a_hand_closed_captain_decision
 test_repair_records_a_key_that_was_never_a_decision
 test_repair_refuses_open_missing_and_non_captain_identities
+test_resolved_hold_stays_verifiable_after_archiving
+test_repair_stamps_an_archived_hand_closed_decision
+test_archived_never_a_decision_key_repairs_and_verifies
+test_archive_fallback_refuses_absent_open_and_non_captain_identities
