@@ -31,6 +31,11 @@ It records the decision digest and routed task identities as a retry identity in
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 A failed intermediate step leaves the hold open.
 
+The `resolve --no-work --reason` form closes a decision that was genuinely made but produced no follow-on work.
+It takes the decision from `--reason`, records it as the durable resolution with routed identities `none`, and marks the hold Done, so `verify` accepts it exactly as it accepts a routed resolution.
+Unlike a routed `resolve` it invents no synthetic routed task, and unlike `repair --never-a-decision` it asserts a decision did happen.
+It refuses `--decision-file` and `--routed-to`; an identical retry is idempotent, while a retry recording a different reason fails.
+
 The `repair` subcommand is the only supported way to stamp that same attestation onto a captain identity that was already closed outside the script, which both `hold` and `resolve` refuse to touch.
 It requires an existing kind `captain` identity that is already Done and reuses the `resolve` body and retry identity, so `verify` accepts the record afterwards without loosening any acceptance rule.
 The body records which of two mutually exclusive facts is stamped: a real captain decision closed by hand, or, with `--never-a-decision` and its own `--note-file`, a key that never carried a captain decision at all.
