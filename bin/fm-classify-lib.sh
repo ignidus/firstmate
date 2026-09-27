@@ -152,13 +152,17 @@ status_is_paused_or_captain_held() {  # <status-line>
 # terminal line never clears an open captain decision.
 #
 # Decision key grammar (backward-compatible with the existing "<verb>: <note>"
-# format): an OPTIONAL "[key=<slug>]" token sits between the verb and the colon,
+# format): an OPTIONAL "[key=<slug>]" token binds the decision key. Its canonical
+# position is between the verb and the colon,
 #   needs-decision [key=api-shape]: <summary>
 #   resolved       [key=api-shape]: <how it was decided>
-# A line with no token uses the key "default", preserving the historical
-# one-open-decision-per-task behavior (a bare "resolved:" closes "default").
-# The three parsers are pure reads of a single line; the verb parser strips any
-# key token before the colon so the leading word is recovered cleanly.
+# but _fm_decision_key scans the WHOLE line for the token, so a token a worker
+# placed after the colon still binds the key instead of being silently dropped and
+# collapsing the line to "default". A line with no token anywhere uses the key
+# "default", preserving the historical one-open-decision-per-task behavior (a bare
+# "resolved:" closes "default"). The three parsers are pure reads of a single line;
+# the verb parser strips any key token before the colon so the leading word is
+# recovered cleanly.
 status_line_verb() {  # <status-line> -> leading verb word
   local v=${1%%:*}
   v=${v%%\[key=*}
@@ -172,16 +176,32 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
     *) printf '%s' "$1" ;;
   esac
 }
+# A [key=...] token placed only after the colon used to be dropped, silently
+# collapsing the line to the "default" key. This one-shot warning fires the first
+# time that shape is seen so the drift is visible even though the token now binds.
+_FM_DECISION_KEY_AFTER_COLON_WARNED=0
+_fm_decision_key_warn_after_colon() {  # <status-line>
+  [ "$_FM_DECISION_KEY_AFTER_COLON_WARNED" = 0 ] || return 0
+  _FM_DECISION_KEY_AFTER_COLON_WARNED=1
+  printf 'fm-classify: [key=...] token found after the colon; it now binds the decision key, but the canonical position is between the verb and the colon (needs-decision [key=slug]: ...). Line: %s\n' "$1" >&2
+}
 _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
-  local prefix=${1%%:*} k
-  case "$prefix" in
+  local line=$1 k
+  case "$line" in
     *\[key=*\]*)
-      k=${prefix#*\[key=}
+      # Bind the FIRST token on the line: a canonical token (before the colon)
+      # wins over any later token in the note, and a token that appears only after
+      # the colon still binds instead of being dropped.
+      k=${line#*\[key=}
       k=${k%%\]*}
       case "$k" in
         ''|*[!A-Za-z0-9._-]*) return 1 ;;
-        *) printf '%s' "$k" ;;
       esac
+      case "${line%%:*}" in
+        *\[key=*\]*) : ;;
+        *) _fm_decision_key_warn_after_colon "$line" ;;
+      esac
+      printf '%s' "$k"
       ;;
     *) printf 'default' ;;
   esac
@@ -315,31 +335,70 @@ signal_reason_is_actionable() {  # <file> ...
   return 1
 }
 
+# Bound on CONSECUTIVE indeterminate (timed-out) crew-state reads that
+# crew_absorb_class absorbs before it surfaces. A timed-out run read is not proof
+# of a stopped crew (a worker with an active background pipeline whose pane is
+# parked reads this way), so absorbing a few in a row avoids a false stale wake;
+# past the bound a genuinely hung CLI or abandoned worker still escalates.
+# FM_CLASSIFY_INDETERMINATE_BOUND overrides it.
+FM_CLASSIFY_INDETERMINATE_BOUND_DEFAULT=3
+
+# Directory holding the per-crew consecutive-indeterminate counter. Real consumers
+# (the watcher and daemon) export FM_STATE_OVERRIDE or STATE; FM_CLASSIFY_STATE_DIR
+# overrides both, chiefly for tests. Absent a resolvable directory the bound cannot
+# be tracked, so an indeterminate read absorbs without counting - a single bounded
+# absorb is safe, and every real caller provides a directory.
+_fm_classify_state_dir() {
+  printf '%s' "${FM_CLASSIFY_STATE_DIR:-${FM_STATE_OVERRIDE:-${STATE:-}}}"
+}
+
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
 # from bin/fm-crew-state.sh's one authoritative current-state line
 # ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
 #   working - an actively-running no-mistakes step (running/fixing/ci) or a busy
 #             pane; the crew is legitimately mid-work on a static-looking pane
-#             (e.g. waiting on CI);
+#             (e.g. waiting on CI). Also returned, bounded, for an indeterminate
+#             read (source read-indeterminate): a timed-out run read is not proof
+#             of a stopped crew, so it is absorbed up to
+#             FM_CLASSIFY_INDETERMINATE_BOUND consecutive times, then surfaced.
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle;
 #   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
-#             torn-down/unknown crew, or an unreadable verdict).
+#             torn-down/unknown crew, an unreadable verdict, or an indeterminate
+#             read past the bound).
 # One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
-# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
-# FM_CREW_STATE_BIN lets tests stub the verdict.
+# NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, and the
+# indeterminate branch persists a counter file, so callers run it only on no-verb
+# signal and first-sighting stale paths, never every wake. FM_CREW_STATE_BIN lets
+# tests stub the verdict.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
+  local id=$1 line state src dir bound counter n
   [ -n "$id" ] || { printf 'none'; return; }
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
+  src=${line#*source: }; src=${src%% *}
+  dir=$(_fm_classify_state_dir)
+  if [ "$state" = working ] && [ "$src" = read-indeterminate ]; then
+    if [ -n "$dir" ]; then
+      bound=${FM_CLASSIFY_INDETERMINATE_BOUND:-$FM_CLASSIFY_INDETERMINATE_BOUND_DEFAULT}
+      case "$bound" in ''|*[!0-9]*) bound=$FM_CLASSIFY_INDETERMINATE_BOUND_DEFAULT ;; esac
+      counter="$dir/.indeterminate-$id"
+      n=$(cat "$counter" 2>/dev/null || printf 0)
+      case "$n" in ''|*[!0-9]*) n=0 ;; esac
+      n=$((n + 1))
+      printf '%s' "$n" > "$counter" 2>/dev/null || true
+      [ "$n" -le "$bound" ] && { printf 'working'; return; }
+      printf 'none'; return
+    fi
+    printf 'working'; return
+  fi
+  # Any definite read clears the consecutive-indeterminate counter.
+  [ -n "$dir" ] && rm -f "$dir/.indeterminate-$id" 2>/dev/null || true
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
-    src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
   printf 'none'

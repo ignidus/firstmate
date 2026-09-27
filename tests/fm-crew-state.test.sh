@@ -69,7 +69,13 @@ case "${1:-}" in
       status)
         shift
         if [ "${1:-}" = --run ]; then printf '%s\n' "${FM_FAKE_AXI_STATUS_RUN:-}"
-        else printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"; fi ;;
+        else
+          # Simulate an unresponsive CLI so the helper's bounded call times out
+          # (exit 124) - the INDETERMINATE primary read. Only `axi status` hangs,
+          # so the coarse `runs` recovery still answers quickly.
+          [ "${FM_FAKE_HANG_STATUS:-0}" = 1 ] && sleep 5
+          printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"
+        fi ;;
       logs)
         printf '%s\n' "${FM_FAKE_CI_LOGS:-}" ;;
     esac
@@ -170,8 +176,9 @@ reset_fakes() {
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_AGENT_STATUS=""
   FM_FAKE_CI_LOGS=""
+  FM_FAKE_HANG_STATUS=0
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING
-  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
+  export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS FM_FAKE_HANG_STATUS
 }
 
 # --- run-object fixtures (TOON, as `no-mistakes axi status` emits) -----------
@@ -1110,9 +1117,12 @@ SH
   elapsed=$((SECONDS - start))
   assert_contains "$out" "state: working" "timed-out no-mistakes falls back to pane"
   assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
-  [ "$elapsed" -lt 5 ] || fail "perl timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
+  [ "$elapsed" -lt 6 ] || fail "perl timeout did not bound no-mistakes calls (elapsed ${elapsed}s)"
+  # A timed-out (exit 124) primary read is indeterminate, so the coarse `runs`
+  # recovery is attempted once - exactly two bounded calls, never an unbounded
+  # retry loop.
   calls=$(awk 'END { print NR + 0 }' "$calls_file" 2>/dev/null || echo 0)
-  [ "$calls" -eq 1 ] || fail "empty no-mistakes status triggered extra lookups ($calls calls)"
+  [ "$calls" -eq 2 ] || fail "indeterminate no-mistakes status did not make exactly the status + coarse recovery calls ($calls calls)"
   pass "no timeout command uses perl bound"
 }
 
@@ -1309,6 +1319,100 @@ test_missing_run_head_falls_back_to_current_state() {
   pass "missing run head falls back instead of matching by branch"
 }
 
+# Head-binding race: local HEAD a few commits ahead of an ACTIVE run head (a fix
+# just committed that the run has not re-armed onto). Attributed as working rather
+# than surfaced as a false no-run stale.
+test_active_run_head_race_after_fix_is_working() {
+  reset_fakes
+  local d run_head out
+  d=$(new_case head-race)
+  make_repo_on_branch "$d/wt" fm/feat-race
+  run_head=$(git -C "$d/wt" rev-parse HEAD)
+  git -C "$d/wt" commit -q --allow-empty -m 'fix commit 1'
+  git -C "$d/wt" commit -q --allow-empty -m 'fix commit 2'
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/race.meta" "window=fm:fm-race" "worktree=$d/wt" "kind=ship"
+  printf 'working: applied review fix\n' > "$d/state/race.status"
+  # The active run still reports the pre-fix head, two commits behind local HEAD.
+  FM_FAKE_RUN_HEAD="$run_head"
+  FM_FAKE_AXI_STATUS="$(run_fixing fm/feat-race)"
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" race
+  out=$(run_crew_state "$d" race)
+  assert_contains "$out" "state: working" "head-race active run -> working"
+  assert_contains "$out" "source: run-step" "head-race attributed to the run-step"
+  assert_contains "$out" "run catching up" "head-race labels the fix-just-landed case"
+  pass "an active run head a few commits behind local HEAD is a race, attributed as working"
+}
+
+# The head-race gate is bounded: local HEAD far ahead of the run head is genuinely
+# advanced past an abandoned run, not a race, so attribution still invalidates.
+test_head_race_beyond_bound_invalidates() {
+  reset_fakes
+  local d run_head out i
+  d=$(new_case head-race-far)
+  make_repo_on_branch "$d/wt" fm/feat-far
+  run_head=$(git -C "$d/wt" rev-parse HEAD)
+  i=0
+  while [ "$i" -lt 5 ]; do git -C "$d/wt" commit -q --allow-empty -m "commit $i"; i=$((i + 1)); done
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/far.meta" "window=fm:fm-far" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: much later stage in progress\n' > "$d/state/far.status"
+  FM_FAKE_RUN_HEAD="$run_head"
+  FM_FAKE_AXI_STATUS="$(run_fixing fm/feat-far)"
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" far
+  out=$(FM_CREW_STATE_HEAD_RACE_BOUND=3 run_crew_state "$d" far)
+  assert_not_contains "$out" "source: run-step" "a run far behind local HEAD must not be attributed as a race"
+  assert_contains "$out" "source: status-log" "beyond-bound advance falls back to current state"
+  pass "local HEAD far past the run head invalidates rather than treating it as a race"
+}
+
+# An INDETERMINATE (timed-out) primary read is not proof of a stopped crew: with no
+# coarse recovery and an idle pane, the helper reports source read-indeterminate so
+# crew_absorb_class can absorb it rather than surface a false stale wake.
+test_indeterminate_read_reports_read_indeterminate() {
+  reset_fakes
+  local d out
+  d=$(new_case read-indeterminate)
+  make_repo_on_branch "$d/wt" fm/feat-indet
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/indet.meta" "window=fm:fm-indet" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: validating in the background\n' > "$d/state/indet.status"
+  # `axi status` hangs (timeout -> exit 124 -> indeterminate); the coarse `runs`
+  # recovery answers empty (no attributable run); the pane is idle. Use the real
+  # PATH so the installed timeout/gtimeout/perl bound and `sleep` are available.
+  FM_FAKE_HANG_STATUS=1
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" indet
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" indet)
+  assert_contains "$out" "source: read-indeterminate" "a timed-out read is reported as indeterminate"
+  assert_contains "$out" "state: working" "an indeterminate read is a bounded-absorbable working verdict"
+  pass "an indeterminate (timed-out) read reports source read-indeterminate, not a false no-run"
+}
+
+# A CLEAN empty primary read (exit 0, genuinely no run) with an idle pane and a
+# stale working: log stays surfaceable - it is NOT indeterminate.
+test_clean_empty_read_is_not_indeterminate() {
+  reset_fakes
+  local d out
+  d=$(new_case clean-empty)
+  make_repo_on_branch "$d/wt" fm/feat-clean
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/clean.meta" "window=fm:fm-clean" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: implementing\n' > "$d/state/clean.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_RUNS_LIST=""
+  FM_FAKE_BUSY=0
+  arm_idle_record "$d/state" clean
+  out=$(run_crew_state "$d" clean)
+  assert_not_contains "$out" "source: read-indeterminate" "a clean empty read must not be treated as indeterminate"
+  assert_contains "$out" "source: status-log" "clean empty read falls back to the status log"
+  pass "a clean empty read is a true no-run, not an indeterminate read"
+}
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
@@ -1357,6 +1461,10 @@ test_usage_error
 test_historical_same_branch_rewritten_head_not_current
 test_active_run_descendant_fix_head_remains_current
 test_local_advanced_past_run_head_invalidates
+test_active_run_head_race_after_fix_is_working
+test_head_race_beyond_bound_invalidates
+test_indeterminate_read_reports_read_indeterminate
+test_clean_empty_read_is_not_indeterminate
 test_missing_run_head_falls_back_to_current_state
 
 echo "all fm-crew-state tests passed"

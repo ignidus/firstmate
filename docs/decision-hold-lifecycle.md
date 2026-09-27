@@ -31,6 +31,11 @@ It records the decision digest and routed task identities as a retry identity in
 An exact retry can finish a partial routing operation, while a changed decision or routed-task set is rejected.
 A failed intermediate step leaves the hold open.
 
+The `resolve --no-work --reason` form closes a decision that was genuinely made but produced no follow-on work.
+It takes the decision from `--reason`, records it as the durable resolution with routed identities `none`, and marks the hold Done, so `verify` accepts it exactly as it accepts a routed resolution.
+Unlike a routed `resolve` it invents no synthetic routed task, and unlike `repair --never-a-decision` it asserts a decision did happen.
+It refuses `--decision-file` and `--routed-to`; an identical retry is idempotent, while a retry recording a different reason fails.
+
 The `repair` subcommand is the only supported way to stamp that same attestation onto a captain identity that was already closed outside the script, which both `hold` and `resolve` refuse to touch.
 It requires an existing kind `captain` identity that is already Done and reuses the `resolve` body and retry identity, so `verify` accepts the record afterwards without loosening any acceptance rule.
 The body records which of two mutually exclusive facts is stamped: a real captain decision closed by hand, or, with `--never-a-decision` and its own `--note-file`, a key that never carried a captain decision at all.
@@ -62,6 +67,7 @@ The focused end-to-end regression uses only synthetic `sample` identities and de
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+A `resolve --no-work --reason` regression covers closing a decision genuinely made but with no follow-on work: it records the decision with routed identities `none`, `verify` accepts it exactly as it accepts a routed resolution, `--decision-file` and `--routed-to` are refused, an identical retry is idempotent, and a retry recording a different reason fails.
 The `repair` regression reproduces a captain hold closed by a plain `tasks-axi done` plus a hand-written note, confirms `verify` and scout teardown still refuse that unstamped record, and then covers stamping a real hand-closed decision, recording a key that never carried a decision, refusal on an open, absent, non-captain, or already-resolved identity, an idempotent identical retry, and a loud failure when a retry records a different decision, routed set, or repair kind.
 It also proves an origin whose metadata still lists the stale key passes `verify` after the repair without any metadata rewrite.
 The archived-identity regression runs real `tasks-axi prune` so the active backlog no longer shows the identity, then proves a resolved hold stays verifiable, retry-safe, and impossible to recreate.

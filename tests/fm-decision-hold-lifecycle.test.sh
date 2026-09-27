@@ -1164,8 +1164,62 @@ test_archive_fallback_refuses_absent_open_and_non_captain_identities() {
   pass "the archive fallback refuses absent, still-open, and non-captain identities under both repair shapes"
 }
 
+# resolve --no-work closes a decision that was genuinely decided but produced no
+# follow-on work: it records a real captain decision (from --reason) whose routed
+# identities are none, closes the hold, and satisfies verify - without a synthetic
+# routed-to and without asserting the decision never existed.
+test_no_work_resolution_closes_a_decided_with_no_work_hold() {
+  local home id hold show reason
+  home=$(make_home no-work-resolution)
+  id=sample-scope-review
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate sample scope" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create investigation fixture"
+  write_origin_meta "$home" "$id"
+  printf 'needs-decision [key=scope]: widen scope now or defer\ndone: report complete\n' > "$home/state/$id.status"
+  cat > "$home/data/$id/report.md" <<'EOF'
+# Sample scope review
+The captain must decide whether to widen scope; the outcome may well be no action.
+EOF
+  hold=$(run_decisions "$home" hold "$id" scope \
+    --title "Decide sample scope" --reason "captain scope choice pending" --repo sample) \
+    || fail "could not register the scope hold"
+  run_decisions "$home" complete "$id" scope >/dev/null || fail "inventory completion failed"
+
+  # --no-work replaces the routed and decision-file inputs, so it refuses both.
+  if run_decisions "$home" resolve "$id" scope --no-work --reason "keep scope as is" \
+      --routed-to some-task > "$home/nw-routed.out" 2> "$home/nw-routed.err"; then
+    fail "--no-work accepted a synthetic routed-to"
+  fi
+  if run_decisions "$home" resolve "$id" scope --no-work --decision-file "$home/report" \
+      > "$home/nw-file.out" 2> "$home/nw-file.err"; then
+    fail "--no-work accepted a decision file"
+  fi
+
+  reason="Reviewed the scope; the decision was to take no action, so there is no follow-on work."
+  run_decisions "$home" resolve "$id" scope --no-work --reason "$reason" >/dev/null \
+    || fail "--no-work resolution failed to close a decided-with-no-work hold"
+  show=$(tasks_in "$home" show "$hold" --full)
+  assert_contains "$show" "state: done" "--no-work resolution did not close the hold"
+  assert_contains "$show" "Resolution recorded by fm-decision-hold" "--no-work lost the decision record"
+  assert_contains "$show" "no follow-on work" "--no-work did not record the no-work outcome"
+
+  # An identical retry is idempotent; a different decision is a conflict.
+  run_decisions "$home" resolve "$id" scope --no-work --reason "$reason" >/dev/null \
+    || fail "idempotent --no-work retry failed"
+  if run_decisions "$home" resolve "$id" scope --no-work --reason "a different decision" \
+      > "$home/nw-diff.out" 2> "$home/nw-diff.err"; then
+    fail "--no-work accepted a conflicting decision on an already-resolved hold"
+  fi
+
+  # The verify gate accepts the no-work resolution.
+  run_decisions "$home" verify "$id" >/dev/null || fail "verify rejected a --no-work resolution"
+  pass "resolve --no-work closes a decided-with-no-work hold and satisfies verify"
+}
+
 test_uninventoried_report_decision_refuses_completion
 
+test_no_work_resolution_closes_a_decided_with_no_work_hold
 test_scout_teardown_always_requires_inventory_verification
 test_structured_holds_survive_teardown_and_route_resolution
 test_origin_slug_validation_precedes_path_construction

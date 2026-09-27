@@ -16,7 +16,15 @@
 # fixed mapping logic, no heuristics and no LLM. Output is one stable, parseable,
 # token-tight line firstmate can read every heartbeat:
 #
-#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|none> · <detail>
+#   state: <working|parked|done|blocked|paused|failed|unknown> · source: <run-step|pane|status-log|read-indeterminate|none> · <detail>
+#
+# source read-indeterminate is a distinct qualifier, NOT a new state: it marks a
+# working verdict the no-run fallback reports when the bounded run read TIMED OUT
+# (so an empty answer is not proof of a stopped crew) and the coarse recovery could
+# not attribute a run either. crew_absorb_class (fm-classify-lib.sh) absorbs it a
+# bounded number of consecutive times before it surfaces, so an active background
+# pipeline whose pane is parked does not fire a false stale wake while a genuinely
+# hung CLI still escalates.
 #
 # Logic, in order:
 #   1. Resolve worktree + backend target + kind from state/<id>.meta.
@@ -26,8 +34,10 @@
 #      branch whose head was rewritten or diverged must not be attributed.
 #      A run matches when its head equals the worktree HEAD, or the worktree HEAD
 #      is an ancestor of the run head (pipeline fix commits advanced the run on
-#      the same line of history). Local work that advanced past the run head, or
-#      diverged from it, invalidates attribution.
+#      the same line of history). Local work that diverged from the run head
+#      invalidates attribution; local work a FEW commits ahead of the run head is
+#      a head-identity race (a fix just committed that the run has not re-armed
+#      onto yet), attributed as working so it is not surfaced as a false no-run.
 #      The run-step is AUTHORITATIVE: running/fixing -> working, ci -> working,
 #      awaiting_approval/fix_review -> parked (with gate findings), terminal
 #      passed/checks-passed -> done, failed/cancelled -> failed. EXCEPT: while
@@ -78,7 +88,18 @@ case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # history every call.
 FM_CREW_STATE_RUNS_LIMIT=${FM_CREW_STATE_RUNS_LIMIT:-200}
 case "$FM_CREW_STATE_RUNS_LIMIT" in ''|*[!0-9]*) FM_CREW_STATE_RUNS_LIMIT=200 ;; esac
+# How many commits the run head may trail local HEAD and still be attributed as a
+# head-identity race (a fix just committed locally that the run has not re-armed
+# onto yet). Small on purpose: a run head far behind local work is stale, not a
+# race. FM_CREW_STATE_HEAD_RACE_BOUND overrides it.
+FM_CREW_STATE_HEAD_RACE_BOUND=${FM_CREW_STATE_HEAD_RACE_BOUND:-3}
+case "$FM_CREW_STATE_HEAD_RACE_BOUND" in ''|*[!0-9]*) FM_CREW_STATE_HEAD_RACE_BOUND=3 ;; esac
 SEP=' · '
+# Set to 1 when the primary run read timed out and the coarse recovery could not
+# attribute a run either: the read is INDETERMINATE, not proof of no run. The
+# no-run fallback then reports source read-indeterminate (bounded-absorbable by
+# crew_absorb_class) instead of a false unknown/no-run that surfaces as stale.
+NM_READ_INDETERMINATE=0
 
 # Emit the one canonical line and exit 0. Detail is optional.
 emit() {  # <state> <source> [detail]
@@ -86,6 +107,18 @@ emit() {  # <state> <source> [detail]
   [ -n "${3:-}" ] && line="$line${SEP}$3"
   printf '%s\n' "$line"
   exit 0
+}
+
+# Emit a no-run fallback verdict that could not be pinned to a concrete state. When
+# the primary run read was indeterminate (timed out) the crew may well have an
+# active background run, so report working with source read-indeterminate, which
+# crew_absorb_class absorbs a bounded number of times rather than surfacing a false
+# stale wake; otherwise the read was clean and this is a genuine unknown.
+emit_unresolved() {  # <detail>
+  if [ "${NM_READ_INDETERMINATE:-0}" = 1 ]; then
+    emit working read-indeterminate "run read timed out; $1"
+  fi
+  emit unknown none "$1"
 }
 
 # --- meta resolution --------------------------------------------------------
@@ -183,7 +216,10 @@ strip_quotes() {
   trim "$s"
 }
 
-# Bounded no-mistakes call in the worktree; stdout only, never fails the script.
+# Bounded no-mistakes call in the worktree; stdout only. Never aborts the script
+# (set -e is not in effect), but PROPAGATES the child exit status so a caller can
+# tell a clean empty answer (exit 0, genuinely no run) apart from a timed-out one
+# (exit 124, indeterminate). Capture it as `RUN_OUT=$(nm_run ...); status=$?`.
 HAVE_TIMEOUT=none
 if command -v timeout >/dev/null 2>&1; then HAVE_TIMEOUT=timeout
 elif command -v gtimeout >/dev/null 2>&1; then HAVE_TIMEOUT=gtimeout
@@ -191,10 +227,10 @@ elif command -v perl >/dev/null 2>&1; then HAVE_TIMEOUT=perl
 fi
 nm_run() {  # <args...>
   case "$HAVE_TIMEOUT" in
-    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null || true ;;
-    *)        true ;;
+    timeout)  ( cd "$WT" && timeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null ;;
+    gtimeout) ( cd "$WT" && gtimeout "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null ;;
+    perl)     ( cd "$WT" && perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$NM_TIMEOUT" no-mistakes "$@" ) 2>/dev/null ;;
+    *)        return 0 ;;
   esac
 }
 
@@ -406,6 +442,37 @@ nm_run_head_matches_worktree() {
   return 1
 }
 
+# 0 when the axi-status run is in an ACTIVE step (running/fixing/ci) with no
+# terminal outcome yet - the only shape that will re-arm onto a newer local head.
+# A parked or terminal run will not catch up on its own, so the head-race branch
+# does not apply to it.
+nm_run_is_active() {
+  local st out
+  out=$(strip_quotes "$(nm_field outcome)")
+  [ -z "$out" ] || return 1
+  st=$(strip_quotes "$(nm_field status)")
+  case "$st" in running|fixing|ci) return 0 ;; *) return 1 ;; esac
+}
+
+# 0 when the active axi-status run head is a STRICT ancestor of this worktree's
+# HEAD within FM_CREW_STATE_HEAD_RACE_BOUND commits: a fix just committed locally
+# that the run has not re-armed onto yet. nm_run_head_matches_worktree rejects this
+# shape (local advanced past the run), which is correct for a genuinely diverged
+# tip but wrong the instant after a fix commit, where the run is still this crew's
+# and will catch up. Branch match is a precondition the caller enforces.
+nm_run_head_recent_ancestor() {
+  local run_head local_full run_full dist
+  run_head=$(strip_quotes "$(nm_field head)")
+  [ -n "$run_head" ] || return 1
+  local_full=$(git -C "$WT" rev-parse HEAD 2>/dev/null) || return 1
+  run_full=$(git -C "$WT" rev-parse --verify "${run_head}^{commit}" 2>/dev/null) || return 1
+  [ "$run_full" != "$local_full" ] || return 1
+  git -C "$WT" merge-base --is-ancestor "$run_full" "$local_full" 2>/dev/null || return 1
+  dist=$(git -C "$WT" rev-list --count "${run_full}..${local_full}" 2>/dev/null) || return 1
+  case "$dist" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$dist" -ge 1 ] && [ "$dist" -le "$FM_CREW_STATE_HEAD_RACE_BOUND" ]
+}
+
 # Coarse runs-list rows are "<status> <branch> <short-sha> ...". 0 if the short
 # sha for this branch row matches the worktree head under the same rules as
 # nm_run_head_matches_worktree (equal, or local is ancestor of run tip).
@@ -430,25 +497,47 @@ RUN_SOURCE=full
 COARSE_STATUS=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
+HEAD_RACE=0
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
   RUN_OUT=$(nm_run axi status)
+  nm_status=$?
   if [ -n "$RUN_OUT" ]; then
     run_branch=$(strip_quotes "$(nm_field branch)")
     if [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_head_matches_worktree; then
       HAVE_RUN=1
+    elif [ -n "$run_branch" ] && [ "$run_branch" = "$CREW_BRANCH" ] && nm_run_is_active && nm_run_head_recent_ancestor; then
+      # Same-branch ACTIVE run whose head trails local HEAD by a few commits: a fix
+      # just landed and the run has not re-armed onto it yet. This is still this
+      # crew's run and it is working, so attribute it rather than fall through to a
+      # false no-run stale. Gated on an active run (running/fixing/ci): a parked or
+      # terminal run will not "catch up" on its own, so a crew that advanced past
+      # such a run has genuinely moved on and still invalidates.
+      HAVE_RUN=1
+      HEAD_RACE=1
     else
       # The active-or-most-recent run is for another branch, or same branch with
       # a rewritten/diverged head (the CLI is alive and answered; only the
       # attribution missed) - try the coarse fallback.
-      # Deliberately nested inside `[ -n "$RUN_OUT" ]`: an empty/timed-out
-      # primary call means the CLI itself did not respond, so retrying it
-      # immediately with a second bounded call would just double the wait
-      # for no better answer.
+      # Deliberately nested inside `[ -n "$RUN_OUT" ]`: a clean empty primary call
+      # (exit 0, genuinely no run) is answered fast, so a second call adds nothing;
+      # a timed-out one is handled by the indeterminate branch below instead.
       COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
       if [ -n "$COARSE_STATUS" ]; then
         HAVE_RUN=1
         RUN_SOURCE=coarse
       fi
+    fi
+  elif [ "$nm_status" = 124 ]; then
+    # The primary read TIMED OUT, so an empty answer is not proof of no run. Try
+    # the coarse recovery (a separate command that may answer within its own
+    # bound); if it too cannot attribute a run, mark the read indeterminate so the
+    # no-run fallback reports read-indeterminate rather than a false no-run.
+    COARSE_STATUS=$(nm_runs_status_for_branch "$CREW_BRANCH")
+    if [ -n "$COARSE_STATUS" ]; then
+      HAVE_RUN=1
+      RUN_SOURCE=coarse
+    else
+      NM_READ_INDETERMINATE=1
     fi
   fi
 fi
@@ -456,6 +545,11 @@ fi
 # --- run-step authoritative path -------------------------------------------
 
 if [ "$HAVE_RUN" = 1 ]; then
+  if [ "$HEAD_RACE" = 1 ]; then
+    # A fix landed locally a few commits ahead of the run head; the run is this
+    # crew's and is working, so absorb rather than surface while it re-arms.
+    emit working run-step "validating; local fix ahead of run head, run catching up"
+  fi
   RUN_STATE=working
   RUN_DETAIL=""
   CI_STEP_STATUS=""
@@ -576,8 +670,8 @@ fi
 # liveness, so a finished-but-pane-closed crew never reaches here. Down here there
 # is no run to consult, so a dead/unreadable target means the crew is gone: report
 # unknown rather than trusting a possibly-stale status log as the current state.
-[ -n "$BACKEND_TARGET" ] || emit unknown none "no backend target recorded"
-pane_readable "$BACKEND_TARGET" || emit unknown none "backend target gone: $BACKEND_TARGET"
+[ -n "$BACKEND_TARGET" ] || emit_unresolved "no backend target recorded"
+pane_readable "$BACKEND_TARGET" || emit_unresolved "backend target gone: $BACKEND_TARGET"
 
 # Secondmates idle on their own watcher (idle pane = healthy), so the busy
 # state is not meaningful for them; read their state from the status log only.
@@ -589,7 +683,7 @@ if [ "$KIND" != secondmate ]; then
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;
-    *) emit unknown pane "harness state unavailable ($BUSY_VERDICT)" ;;
+    *) emit_unresolved "harness state unavailable ($BUSY_VERDICT)" ;;
   esac
 fi
 
@@ -605,9 +699,17 @@ fi
 # `unknown` verdict as the "not a state" test needs no second verb list here.
 if [ -n "$LOG_VERB" ]; then
   LOG_STATE=$(map_log_state "$LOG_LINE")
+  # A stale `working:` log line is not positive evidence on its own. When the run
+  # read was indeterminate the crew may still be validating, so absorb it as
+  # read-indeterminate rather than surfacing a stale working: line. A declared
+  # pause and the terminal verbs (blocked/done/failed) stay authoritative and are
+  # emitted as before, so the declared-pause path is untouched.
+  if [ "$LOG_STATE" = working ] && [ "$NM_READ_INDETERMINATE" = 1 ]; then
+    emit working read-indeterminate "run read timed out; last log: $(status_line_note "$LOG_LINE")"
+  fi
   if [ "$LOG_STATE" != unknown ]; then
     emit "$LOG_STATE" status-log "$(status_line_note "$LOG_LINE")"
   fi
 fi
 
-emit unknown none "no current-state source available"
+emit_unresolved "no current-state source available"
