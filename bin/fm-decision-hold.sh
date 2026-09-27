@@ -24,6 +24,7 @@
 #   fm-decision-hold.sh verify <origin-id>
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
 #     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
+#   fm-decision-hold.sh resolve <origin-id> <decision-key> --no-work --reason <reason>
 #   fm-decision-hold.sh repair <origin-id> <decision-key> \
 #     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
 #   fm-decision-hold.sh repair <origin-id> <decision-key> \
@@ -41,6 +42,14 @@
 # It writes the captain decision and routed identities into the hold body, clears
 # those dependency edges, and only then marks the hold Done. A failure before the
 # final step leaves the captain hold open.
+#
+# `resolve --no-work` closes a decision that was genuinely decided but produced NO
+# follow-on work. It takes the decision itself from --reason (no --decision-file,
+# no --routed-to), records a real captain decision whose routed identities are
+# `none`, and marks the hold Done, so `verify` accepts it exactly as it accepts a
+# routed resolution. Unlike `repair --never-a-decision` it asserts a decision DID
+# happen, and unlike the routed `resolve` it invents no synthetic routed-to. An
+# identical retry is idempotent; a retry recording a different decision fails.
 #
 # `repair` is the only supported way to stamp this script's attestation onto a
 # captain identity that was already closed outside this script, which `hold` and
@@ -542,19 +551,56 @@ EOF
 }
 
 command_resolve() {
-  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0
+  local origin=${1:-} key=${2:-} decision_file='' id='' decision='' decision_digest='' body='' routed='' routed_csv='' dep show blocked state hold_show hold_body resolution_recorded=0 no_work=0 reason=''
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --decision-file) shift; decision_file=${1:-} ;;
       --routed-to) shift; validate_slug routed-task "${1:-}"; routed="${routed}${routed:+ }${1:-}" ;;
+      --no-work) no_work=1 ;;
+      --reason) shift; reason=${1:-} ;;
       *) usage >&2; exit 2 ;;
     esac
     shift
   done
   validate_slug origin-id "$origin"
   validate_slug decision-key "$key"
+
+  if [ "$no_work" = 1 ]; then
+    [ -z "$decision_file" ] || fail "--no-work records the decision from --reason and cannot be combined with --decision-file"
+    [ -z "$routed" ] || fail "--no-work records a decision with no follow-on work and cannot be combined with --routed-to"
+    validate_one_line reason "$reason"
+    decision_digest=$(sha256_text "$reason")
+    routed_csv=none
+    require_tasks_axi
+    id=$(hold_id "$origin" "$key")
+    if verify_hold_resolved "$id"; then
+      hold_show=$(identity_show "$id")
+      hold_body=$(show_field "$hold_show" body)
+      verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
+      printf 'resolved: %s\n' "$id"
+      return 0
+    fi
+    verify_hold_active "$id"
+    hold_show=$(identity_show "$id")
+    hold_body=$(show_field "$hold_show" body)
+    case "$hold_body" in
+      *"Resolution recorded by fm-decision-hold."*)
+        verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
+        ;;
+    esac
+    body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n\nCaptain decision:\n%s\n\nRouted work:\nNone. This decision produced no follow-on work.\n' \
+      "$decision_digest" "$routed_csv" "$reason")
+    tasks_axi update "$id" --body "$body" >/dev/null \
+      || fail "could not record the captain decision on $id"
+    tasks_axi "done" "$id" >/dev/null || fail "could not close resolved captain hold $id"
+    verify_hold_resolved "$id" || fail "captain hold $id did not retain its durable resolution record"
+    printf 'resolved: %s -> no follow-on work\n' "$id"
+    return 0
+  fi
+
+  [ -z "$reason" ] || fail "--reason is only valid with --no-work"
   decision=$(read_decision_record decision "$decision_file")
   [ -n "$routed" ] || fail "at least one --routed-to task is required"
   routed=$(printf '%s\n' "$routed" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)

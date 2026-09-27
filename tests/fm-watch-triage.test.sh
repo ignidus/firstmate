@@ -191,12 +191,27 @@ test_classifier_primitives() {
     && fail "FM_CAPTAIN_RE override bypassed paused: suppression"
   FM_CAPTAIN_RE='custom-verb:' status_is_captain_relevant "custom-verb: x" \
     || fail "nonterminal suppression weakened custom bare-line behavior"
-  printf 'needs-decision: should docs mention [key=prose]?\nneeds-decision [key=q1]: real choice\nresolved: docs still mention [key=q1]\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
+  # _fm_decision_key scans the WHOLE line: a canonical token (before the colon)
+  # binds, and a token a worker placed AFTER the colon still binds instead of being
+  # silently dropped to "default". A canonical token wins when both are present.
+  [ "$(_fm_decision_key 'needs-decision [key=early]: pick' 2>/dev/null)" = early ] \
+    || fail "_fm_decision_key missed a canonical token"
+  [ "$(_fm_decision_key 'needs-decision: pick one [key=late]' 2>/dev/null)" = late ] \
+    || fail "_fm_decision_key dropped a token placed after the colon"
+  [ "$(_fm_decision_key 'needs-decision [key=early]: note [key=late]' 2>/dev/null)" = early ] \
+    || fail "_fm_decision_key did not prefer the canonical token when both are present"
+  [ "$(_fm_decision_key 'done: no token here')" = default ] \
+    || fail "_fm_decision_key did not default an absent token"
+  _fm_decision_key 'needs-decision [key=bad key]: x' >/dev/null 2>&1 \
+    && fail "_fm_decision_key accepted an invalid slug"
+  printf 'needs-decision [key=q1]: real choice\nneeds-decision: after-colon token [key=q2]\nresolved [key=q1]: decided A\nneeds-decision [key=bad key]: malformed\n' > "$state/keys.status"
   open=$(status_open_decisions "$state/keys.status")
+  printf '%s' "$open" | grep -F $'q2\t' >/dev/null \
+    || fail "a [key=...] token after the colon did not bind the decision key"
+  printf '%s' "$open" | grep -F $'default\t' >/dev/null \
+    && fail "an after-colon token was dropped and collapsed to the default key"
   printf '%s' "$open" | grep -F $'q1\t' >/dev/null \
-    || fail "a key token in resolved note prose closed the keyed decision"
-  printf '%s' "$open" | grep -F $'prose\t' >/dev/null \
-    && fail "a key token in note prose changed the decision key"
+    && fail "a keyed resolved event did not close its keyed decision"
   printf '%s' "$open" | grep -F $'bad key\t' >/dev/null \
     && fail "an invalid key slug entered the open-decision set"
   cat > "$state/activity.status" <<'EOF'
@@ -306,6 +321,36 @@ test_crew_absorb_class_classifier() {
   [ "$(crew_absorb_class "")" = none ] || fail "empty id not classed none"
   unset FM_FAKE_CREW_STATE
   pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
+}
+
+# crew_absorb_class ABSORBS an indeterminate (timed-out) read - source
+# read-indeterminate - as working, but only a bounded number of CONSECUTIVE times:
+# a worker with an active background pipeline whose pane is parked reads this way
+# and must not fire a false stale wake, while a genuinely hung CLI still escalates
+# once the bound is crossed. A definite read in between resets the count.
+test_crew_absorb_class_read_indeterminate() {
+  local dir fakebin state i
+  dir=$(make_case absorb-indeterminate); fakebin="$dir/fakebin"; state="$dir/state"
+  export FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh"
+  export FM_FAKE_CREW_STATE
+  export FM_CLASSIFY_STATE_DIR="$state"
+  export FM_CLASSIFY_INDETERMINATE_BOUND=3
+  FM_FAKE_CREW_STATE='state: working · source: read-indeterminate · run read timed out; x'
+  for i in 1 2 3; do
+    [ "$(crew_absorb_class a)" = working ] || fail "indeterminate read $i within the bound was not absorbed"
+  done
+  [ "$(crew_absorb_class a)" = none ] || fail "an indeterminate read past the bound was not surfaced"
+  [ "$(crew_absorb_class a)" = none ] || fail "a hung crew stopped surfacing after the bound"
+  # A definite read resets the consecutive count.
+  FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
+  [ "$(crew_absorb_class a)" = working ] || fail "a definite run-step read was not absorbed"
+  [ ! -e "$state/.indeterminate-a" ] || fail "a definite read did not clear the indeterminate counter"
+  FM_FAKE_CREW_STATE='state: working · source: read-indeterminate · x'
+  [ "$(crew_absorb_class a)" = working ] || fail "the indeterminate count did not reset after a definite read"
+  # crew_is_provably_working agrees while within the bound.
+  crew_is_provably_working a || fail "crew_is_provably_working disagreed with a bounded indeterminate absorb"
+  unset FM_FAKE_CREW_STATE FM_CLASSIFY_STATE_DIR FM_CLASSIFY_INDETERMINATE_BOUND
+  pass "crew_absorb_class: indeterminate reads absorb up to the bound, then surface; a definite read resets"
 }
 
 # signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
@@ -1806,6 +1851,7 @@ test_classifier_primitives
 test_crew_is_provably_working_classifier
 test_status_is_paused_classifier
 test_crew_absorb_class_classifier
+test_crew_absorb_class_read_indeterminate
 test_signal_crew_provably_working_classifier
 test_provably_working_signal_absorbed
 test_turn_ended_provably_working_absorbed
