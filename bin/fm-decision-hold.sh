@@ -58,6 +58,23 @@
 # archives the superseded body, and stamps the attestation last so a failure
 # before that leaves the record unstamped. An identical retry is idempotent; a
 # retry recording a different decision, routed set, or repair kind fails.
+#
+# Every decision identity, and every identity `repair` routes to, resolves to its
+# newest record: the active backlog first, then the markdown `archive` that the
+# active FM_HOME's `.tasks.toml` declares, because retention archives closed rows
+# rather than deleting them and `tasks-axi show` reads only the active backlog.
+# The archive is an append-only log of `## ` sections that `show` does not index,
+# so each section mentioning the identity is rewritten under the active backlog's
+# three section headings and parsed by tasks-axi itself, newest section first.
+# Only checked rows parse under `## Done`, so an archived record can only ever meet
+# the durably-resolved shape; an unchecked row a non-default prune archived stays
+# unreadable. `resolve` still requires its routed work in the active backlog.
+# tasks-axi never rewrites the archive, so `repair` stamps an archived identity by
+# appending a new snapshot: that newest section is reduced to the one row with
+# tasks-axi rm, stamped with tasks-axi update, and appended to the same archive by
+# `tasks-axi prune --keep 0`, which is the stamp's only durable write. The earlier
+# unstamped snapshot stays in the archive as the superseded body. Routed work that
+# is itself archived keeps its retired edge, which blocks nothing.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -142,6 +159,116 @@ task_show() {  # <id>
   tasks_axi show "$1" --full 2>/dev/null
 }
 
+# Print one double-quoted [markdown] key from the active home's tasks-axi config,
+# resolved against FM_HOME the way tasks-axi resolves it.
+tasks_store_path() {  # <path|archive>
+  local key=$1 value
+  [ -f "$FM_HOME/.tasks.toml" ] || return 1
+  value=$(awk -v key="$key" '
+    /^[[:space:]]*\[/ { table = $0; gsub(/[[:space:]]/, "", table); next }
+    table == "[markdown]" && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
+      line = $0
+      sub(/^[^=]*=[[:space:]]*/, "", line)
+      if (match(line, /^"[^"]+"/)) { print substr(line, 2, RLENGTH - 2); exit }
+    }
+  ' "$FM_HOME/.tasks.toml")
+  [ -n "$value" ] || return 1
+  case "$value" in
+    /*) printf '%s\n' "$value" ;;
+    *) printf '%s/%s\n' "$FM_HOME" "$value" ;;
+  esac
+}
+
+searched_stores() {
+  local active archive
+  active=$(tasks_store_path path) || active="the tasks-axi backlog in $FM_HOME"
+  if archive=$(tasks_store_path archive); then
+    printf '%s and its archive %s' "$active" "$archive"
+  else
+    printf '%s, which declares no archive' "$active"
+  fi
+}
+
+init_work_root() {
+  WORK_ROOT=$(umask 077; mktemp -d "${TMPDIR:-/tmp}/fm-decision-hold-work.XXXXXX") \
+    || fail "could not create a private work directory"
+  trap 'rm -rf "$WORK_ROOT"' EXIT
+}
+
+work_dir() {
+  [ -n "${WORK_ROOT:-}" ] || fail "private work directory is not initialized"
+  mktemp -d "$WORK_ROOT/lookup.XXXXXX" || fail "could not create a private work directory"
+}
+
+# Print the normalized copy of the newest archive section whose tasks-axi parse
+# holds <id>. A substring hit only selects candidates; tasks-axi decides.
+archive_section() {  # <id> <work-dir>
+  local id=$1 dir=$2 archive sections section
+  [ -n "$dir" ] && [ -d "$dir" ] || return 1
+  archive=$(tasks_store_path archive) || return 1
+  [ -f "$archive" ] || return 1
+  awk -v id="$id" -v dir="$dir" '
+    function flush(  file) {
+      if (hit) {
+        file = sprintf("%s/section.%08d.md", dir, n)
+        printf "## In flight\n\n## Queued\n\n## Done\n%s", body > file
+        close(file)
+      }
+      body = ""
+      hit = 0
+    }
+    /^## / { flush(); n++; next }
+    { body = body $0 "\n"; if (index($0, id)) hit = 1 }
+    END { flush() }
+  ' "$archive" || return 1
+  sections=$(find "$dir" -type f -name 'section.*.md' | LC_ALL=C sort -r)
+  while IFS= read -r section; do
+    [ -n "$section" ] || continue
+    if tasks_axi show "$id" --file="$section" >/dev/null 2>&1; then
+      printf '%s\n' "$section"
+      return 0
+    fi
+  done <<EOF
+$sections
+EOF
+  return 1
+}
+
+# Print the newest record of <id>: the active backlog first, then its archive.
+identity_show() {  # <id>
+  local id=$1 show dir section
+  if show=$(task_show "$id"); then
+    printf '%s\n' "$show"
+    return 0
+  fi
+  dir=$(work_dir) || return 1
+  section=$(archive_section "$id" "$dir") || return 1
+  tasks_axi show "$id" --full --file="$section" 2>/dev/null
+}
+
+done_ids() {  # <backlog-file>
+  tasks_axi list --state "done" --file="$1" \
+    | sed -n 's/^  "\{0,1\}\([A-Za-z0-9._-][A-Za-z0-9._-]*\)"\{0,1\},done,.*/\1/p'
+}
+
+# Append a stamped snapshot of an archived identity to its archive.
+stamp_archived_record() {  # <id> <body>
+  local id=$1 body=$2 dir section others other
+  dir=$(work_dir) || return 1
+  section=$(archive_section "$id" "$dir") || return 1
+  others=$(done_ids "$section") || return 1
+  while IFS= read -r other; do
+    [ -n "$other" ] && [ "$other" != "$id" ] || continue
+    tasks_axi rm "$other" --file="$section" >/dev/null || return 1
+  done <<EOF
+$others
+EOF
+  tasks_axi list --state "done" --file="$section" | grep -Fx 'count: 1' >/dev/null || return 1
+  [ "$(done_ids "$section")" = "$id" ] || return 1
+  tasks_axi update "$id" --body "$body" --file="$section" >/dev/null || return 1
+  tasks_axi prune --keep 0 --file="$section" >/dev/null
+}
+
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
   printf '%s\n' "$output" | sed -n "s/^  $field: //p" | head -1
@@ -191,7 +318,7 @@ origin_open_decisions() {  # <origin-id>
 
 verify_hold_active() {  # <hold-id>
   local id=$1 show state held kind hold_kind
-  show=$(task_show "$id") || fail "captain hold $id is absent from $FM_HOME/data/backlog.md"
+  show=$(identity_show "$id") || fail "captain hold $id is absent from $(searched_stores)"
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
@@ -204,7 +331,7 @@ verify_hold_active() {  # <hold-id>
 
 verify_hold_resolved() {  # <hold-id>
   local id=$1 show state kind body
-  show=$(task_show "$id") || return 1
+  show=$(identity_show "$id") || return 1
   state=$(show_field "$show" state)
   kind=$(show_field "$show" kind)
   body=$(show_field "$show" body)
@@ -218,7 +345,7 @@ verify_hold_resolved() {  # <hold-id>
 
 verify_hold_durable() {  # <hold-id>
   local id=$1 show state held kind hold_kind body
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  show=$(identity_show "$id") || fail "captain decision $id is absent from $(searched_stores)"
   state=$(show_field "$show" state)
   held=$(show_field "$show" held)
   kind=$(show_field "$show" kind)
@@ -296,7 +423,7 @@ command_hold() {
   require_tasks_axi
   origin_exists_here "$origin" || fail "origin $origin is not owned by the active home $FM_HOME"
   id=$(hold_id "$origin" "$key")
-  if show=$(task_show "$id"); then
+  if show=$(identity_show "$id"); then
     state=$(show_field "$show" state)
     kind=$(show_field "$show" kind)
     existing_title=$(show_field "$show" title)
@@ -436,14 +563,14 @@ command_resolve() {
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
   if verify_hold_resolved "$id"; then
-    hold_show=$(task_show "$id")
+    hold_show=$(identity_show "$id")
     hold_body=$(show_field "$hold_show" body)
     verify_resolution_identity "$id" "$hold_body" "$decision_digest" "$routed_csv"
     printf 'resolved: %s\n' "$id"
     return 0
   fi
   verify_hold_active "$id"
-  hold_show=$(task_show "$id")
+  hold_show=$(identity_show "$id")
   hold_body=$(show_field "$hold_show" body)
   case "$hold_body" in
     *"Resolution recorded by fm-decision-hold."*)
@@ -534,7 +661,7 @@ command_repair() {
   digest=$(sha256_text "$record")
   require_tasks_axi
   id=$(hold_id "$origin" "$key")
-  show=$(task_show "$id") || fail "captain decision $id is absent from $FM_HOME/data/backlog.md"
+  show=$(identity_show "$id") || fail "captain decision $id is absent from $(searched_stores)"
   kind=$(show_field "$show" kind)
   state=$(show_field "$show" state)
   hold_body=$(show_field "$show" body)
@@ -550,32 +677,38 @@ command_repair() {
   # Prove every routed identity exists before mutating any edge, so a bad routed
   # set fails before a partial repair.
   for dep in $routed; do
-    task_show "$dep" >/dev/null || fail "routed task $dep does not exist in the active home"
+    identity_show "$dep" >/dev/null || fail "routed task $dep does not exist in the active home"
   done
   # A hand-closed identity leaves its recorded dependency edge on routed work even
   # though tasks-axi already treats a Done blocker as satisfied. Clearing the edge
   # is idempotent, and doing it before the attestation keeps the stamp the last
   # write, so an interrupted repair stays unstamped.
   for dep in $routed; do
+    task_show "$dep" >/dev/null || continue
     tasks_axi unblock "$dep" --by "$id" >/dev/null \
       || fail "could not clear the recorded dependency edge from $dep"
   done
 
   body=$(printf 'Resolution recorded by fm-decision-hold.\nDecision digest: %s\nRouted identities: %s\n%s\n\nCaptain decision:\n%s\n\nRouted work:\n%s\n' \
     "$digest" "$routed_csv" "$mark" "$section" "$routed_block")
-  tasks_axi update "$id" --body "$body" --archive-body >/dev/null \
-    || fail "could not stamp the resolution record on $id"
+  if task_show "$id" >/dev/null; then
+    tasks_axi update "$id" --body "$body" --archive-body >/dev/null \
+      || fail "could not stamp the resolution record on $id"
+  else
+    stamp_archived_record "$id" "$body" \
+      || fail "could not append the stamped resolution record for $id to $(searched_stores)"
+  fi
   verify_hold_resolved "$id" || fail "captain decision $id did not retain its stamped resolution record"
   printf 'repaired: %s%s\n' "$id" "${routed:+ -> $routed}"
 }
 
 case "${1:-}" in
   id) shift; command_id "$@" ;;
-  hold) shift; command_hold "$@" ;;
-  complete) shift; command_complete "$@" ;;
-  verify) shift; command_verify "$@" ;;
-  resolve) shift; command_resolve "$@" ;;
-  repair) shift; command_repair "$@" ;;
+  hold) shift; init_work_root; command_hold "$@" ;;
+  complete) shift; init_work_root; command_complete "$@" ;;
+  verify) shift; init_work_root; command_verify "$@" ;;
+  resolve) shift; init_work_root; command_resolve "$@" ;;
+  repair) shift; init_work_root; command_repair "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
