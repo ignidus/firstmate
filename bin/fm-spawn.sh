@@ -109,6 +109,13 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+#   Every spawn refuses to launch while its brief still holds an unfilled
+#   scaffold placeholder: a {NAME} token with NAME matching [A-Z][A-Z0-9_]*,
+#   such as fm-brief.sh's {TASK}. The error names each token and the brief path.
+#   Mentions inside inline code spans or fenced code blocks, and shell ${NAME}
+#   expansions, are explanatory text and do not refuse. Ship and scout spawns
+#   check before any worktree or endpoint exists; a secondmate spawn checks after
+#   its pre-launch home sync, because its charter path is resolved there.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -913,6 +920,33 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+
+# Unfilled scaffold placeholders (fm-brief.sh emits {TASK}, for example) mean the
+# worker would launch with no real instructions. A placeholder is a {NAME} token
+# with NAME matching [A-Z][A-Z0-9_]*; shell ${NAME} expansions, inline code spans,
+# and fenced code blocks are skipped so explanatory mentions do not refuse.
+brief_unfilled_placeholders() {  # <brief> -> unique tokens, one per line
+  awk '
+    /^[ \t]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    {
+      line = $0
+      gsub(/``[^`]*``/, "", line)
+      gsub(/`[^`]*`/, "", line)
+      while (match(line, /(^|[^$])[{][A-Z][A-Z0-9_]*[}]/)) {
+        tok = substr(line, RSTART, RLENGTH)
+        sub(/^[^{]*/, "", tok)
+        if (!(tok in seen)) { seen[tok] = 1; print tok }
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$1"
+}
+UNFILLED=$(brief_unfilled_placeholders "$BRIEF")
+if [ -n "$UNFILLED" ]; then
+  echo "error: brief at $BRIEF still contains unfilled placeholder(s): $(printf '%s\n' "$UNFILLED" | paste -sd ' ' -); replace them with the real task text before spawning $ID" >&2
+  exit 1
+fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
